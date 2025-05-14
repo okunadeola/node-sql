@@ -1,0 +1,2277 @@
+# SQL-First E-commerce Application Structure
+
+```
+ecommerce-app/
+│
+├── server/
+│   ├── src/
+│   │   ├── config/
+│   │   │   ├── db.js           # Database connection
+│   │   │   └── environment.js  # Environment variables
+│   │   │
+│   │   ├── db/
+│   │   │   ├── schema/         # Database schema files
+│   │   │   │   ├── tables.sql
+│   │   │   │   ├── indexes.sql
+│   │   │   │   └── constraints.sql
+│   │   │   │
+│   │   │   ├── queries/        # Organized SQL queries
+│   │   │   │   ├── users.js    # User-related queries
+│   │   │   │   ├── products.js # Product-related queries
+│   │   │   │   ├── orders.js   # Order-related queries
+│   │   │   │   ├── analytics.js # Analytics queries
+│   │   │   │   └── search.js   # Search functionality
+│   │   │   │
+│   │   │   └── migrations/     # Database migrations
+│   │   │       ├── 001_initial_setup.sql
+│   │   │       ├── 002_add_indexes.sql
+│   │   │       └── 003_add_constraints.sql
+│   │   │
+│   │   ├── controllers/        # Request handlers
+│   │   │   ├── userController.js
+│   │   │   ├── productController.js
+│   │   │   ├── orderController.js
+│   │   │   └── analyticsController.js
+│   │   │
+│   │   ├── routes/             # API routes
+│   │   │   ├── userRoutes.js
+│   │   │   ├── productRoutes.js
+│   │   │   ├── orderRoutes.js
+│   │   │   └── analyticsRoutes.js
+│   │   │
+│   │   ├── middleware/         # Request middleware
+│   │   │   ├── auth.js
+│   │   │   ├── validation.js
+│   │   │   └── errorHandler.js
+│   │   │
+│   │   ├── utils/              # Helper functions
+│   │   │   ├── sqlBuilder.js   # Dynamic SQL query builder
+│   │   │   ├── validator.js    # Input validation
+│   │   │   ├── logger.js       # SQL logging
+│   │   │   └── error.js        # Error formatting
+│   │   │
+│   │   └── server.js           # Entry point
+│   │
+│   ├── package.json
+│   └── .env                    # Environment variables
+│
+├── README.md
+└── docker-compose.yml         # Docker setup for PostgreSQL
+```
+
+## Tech Stack
+- Node.js with Express
+- PostgreSQL (raw SQL queries)
+- pg (Node PostgreSQL driver)
+- Redis (for caching)
+- JWT for authentication
+
+## Database Schema Overview
+- Users (customers, admins, etc.)
+- Products (catalog items)
+- Categories (product organization)
+- Orders (purchase transactions)
+- Order_Items (items in each order)
+- Inventory (stock management)
+- Reviews (product reviews)
+- Wishlists
+- Shopping_Carts
+- Payment_Transactions
+
+## SQL Topic Implementation
+1. **CRUD Operations**: Implemented across all entities
+2. **JOINs**: Used in order retrieval, product listings, etc.
+3. **Aggregation**: Used in analytics, reporting
+4. **Subqueries**: Used in inventory management, user analytics
+5. **Window Functions**: Used in sales ranking, time-series analysis
+6. **Indexes**: Created for performance optimization
+7. **Transactions**: Used in order processing, inventory updates
+
+## Development Approach
+1. Define database schema with proper relations
+2. Create comprehensive SQL queries for all operations
+3. Implement API endpoints with raw SQL
+4. Add authentication and authorization
+5. Implement error handling and validation
+6. Optimize queries for performance
+
+
+
+
+
+
+
+
+
+-- tables.sql: Database schema for e-commerce application
+
+-- Enable UUID generation
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- 1. Users Table
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    username VARCHAR(50) NOT NULL UNIQUE,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    phone VARCHAR(20),
+    address JSONB,  -- Structured address data
+    role VARCHAR(20) CHECK (role IN ('customer', 'admin', 'seller')) DEFAULT 'customer',
+    account_status VARCHAR(20) CHECK (account_status IN ('active', 'suspended', 'banned')) DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP WITH TIME ZONE
+);
+
+-- 2. Categories Table
+CREATE TABLE categories (
+    category_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    description TEXT,
+    parent_id UUID REFERENCES categories(category_id), -- Self-reference for hierarchical categories
+    image_url VARCHAR(255),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. Products Table
+CREATE TABLE products (
+    product_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    sku VARCHAR(50) UNIQUE,
+    price DECIMAL(10, 2) NOT NULL CHECK (price >= 0),
+    compare_price DECIMAL(10, 2) CHECK (compare_price IS NULL OR compare_price >= price),
+    cost_price DECIMAL(10, 2),
+    category_id UUID REFERENCES categories(category_id),
+    seller_id UUID REFERENCES users(user_id),
+    brand VARCHAR(100),
+    weight DECIMAL(8, 2),
+    dimensions JSONB, -- Store height, width, length
+    is_physical BOOLEAN DEFAULT TRUE, -- Physical vs digital product
+    is_active BOOLEAN DEFAULT TRUE,
+    is_featured BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 4. Product Images Table
+CREATE TABLE product_images (
+    image_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    url VARCHAR(255) NOT NULL,
+    alt_text VARCHAR(255),
+    is_primary BOOLEAN DEFAULT FALSE,
+    display_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5. Product Attributes Table
+CREATE TABLE product_attributes (
+    attribute_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    value TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 6. Inventory Table
+CREATE TABLE inventory (
+    inventory_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+    warehouse_location VARCHAR(100),
+    low_stock_threshold INTEGER DEFAULT 5,
+    last_restock_date TIMESTAMP WITH TIME ZONE,
+    next_restock_date TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 7. Shopping Cart Table
+CREATE TABLE shopping_carts (
+    cart_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id VARCHAR(100), -- For non-logged in users
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    
+    -- Ensure either user_id or session_id is provided
+    CONSTRAINT cart_user_or_session CHECK (
+        (user_id IS NOT NULL AND session_id IS NULL) OR
+        (user_id IS NULL AND session_id IS NOT NULL)
+    )
+);
+
+-- 8. Cart Items Table
+CREATE TABLE cart_items (
+    cart_item_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    cart_id UUID NOT NULL REFERENCES shopping_carts(cart_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    custom_attributes JSONB -- Store custom options, gift messages, etc.
+);
+
+-- 9. Orders Table
+CREATE TABLE orders (
+    order_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(user_id),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    status VARCHAR(30) CHECK (
+        status IN (
+            'pending', 'processing', 'on_hold',
+            'completed', 'cancelled', 'refunded',
+            'failed', 'shipped', 'delivered'
+        )
+    ) DEFAULT 'pending',
+    subtotal DECIMAL(10, 2) NOT NULL CHECK (subtotal >= 0),
+    tax_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (tax_amount >= 0),
+    shipping_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (shipping_amount >= 0),
+    discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (discount_amount >= 0),
+    total_amount DECIMAL(10, 2) NOT NULL CHECK (total_amount >= 0),
+    shipping_address JSONB NOT NULL,
+    billing_address JSONB NOT NULL,
+    payment_method VARCHAR(50) NOT NULL,
+    payment_status VARCHAR(30) CHECK (
+        payment_status IN (
+            'pending', 'authorized', 'paid',
+            'partially_refunded', 'refunded', 'failed'
+        )
+    ) DEFAULT 'pending',
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+
+-- 10. Order Items Table
+CREATE TABLE order_items (
+    order_item_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    name VARCHAR(255) NOT NULL, -- Store product name at time of purchase
+    sku VARCHAR(50) NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price DECIMAL(10, 2) NOT NULL CHECK (unit_price >= 0),
+    subtotal DECIMAL(10, 2) NOT NULL CHECK (subtotal >= 0),
+    tax_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (tax_amount >= 0),
+    discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (discount_amount >= 0),
+    total DECIMAL(10, 2) NOT NULL CHECK (total >= 0),
+    product_data JSONB, -- Store snapshot of product data
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 11. Payments Table
+CREATE TABLE payments (
+    payment_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES orders(order_id),
+    amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
+    payment_method VARCHAR(50) NOT NULL,
+    payment_provider VARCHAR(50) NOT NULL,
+    transaction_id VARCHAR(255),
+    status VARCHAR(30) CHECK (
+        status IN (
+            'pending', 'authorized', 'completed',
+            'failed', 'refunded', 'partially_refunded'
+        )
+    ) DEFAULT 'pending',
+    provider_response JSONB, -- Store provider's response
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 12. Order History Table
+CREATE TABLE order_history (
+    history_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    status VARCHAR(30) NOT NULL,
+    comment TEXT,
+    created_by UUID REFERENCES users(user_id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 13. Product Reviews Table
+CREATE TABLE product_reviews (
+    review_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id),
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    title VARCHAR(255),
+    content TEXT,
+    is_verified_purchase BOOLEAN DEFAULT FALSE,
+    status VARCHAR(20) CHECK (status IN ('pending', 'approved', 'rejected')) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 14. Wishlist Table
+CREATE TABLE wishlists (
+    wishlist_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    name VARCHAR(100) DEFAULT 'Default',
+    is_public BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 15. Wishlist Items Table
+CREATE TABLE wishlist_items (
+    wishlist_item_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    wishlist_id UUID NOT NULL REFERENCES wishlists(wishlist_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT
+);
+
+-- 16. Discounts Table
+CREATE TABLE discounts (
+    discount_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    code VARCHAR(50) UNIQUE,
+    type VARCHAR(20) CHECK (type IN ('percentage', 'fixed_amount', 'free_shipping')) NOT NULL,
+    value DECIMAL(10, 2) CHECK (value >= 0),
+    min_purchase_amount DECIMAL(10, 2) CHECK (min_purchase_amount >= 0),
+    max_discount_amount DECIMAL(10, 2) CHECK (max_discount_amount >= 0),
+    starts_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    ends_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    usage_limit INTEGER,
+    usage_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 17. Discount Products Table (which products the discount applies to)
+CREATE TABLE discount_products (
+    discount_id UUID NOT NULL REFERENCES discounts(discount_id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    PRIMARY KEY (discount_id, product_id)
+);
+
+-- 18. Discount Categories Table (which categories the discount applies to)
+CREATE TABLE discount_categories (
+    discount_id UUID NOT NULL REFERENCES discounts(discount_id) ON DELETE CASCADE,
+    category_id UUID NOT NULL REFERENCES categories(category_id) ON DELETE CASCADE,
+    PRIMARY KEY (discount_id, category_id)
+);
+
+-- 19. User Addresses Table
+CREATE TABLE user_addresses (
+    address_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    is_default BOOLEAN DEFAULT FALSE,
+    address_type VARCHAR(20) CHECK (address_type IN ('billing', 'shipping', 'both')) NOT NULL,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    address_line1 VARCHAR(255) NOT NULL,
+    address_line2 VARCHAR(255),
+    city VARCHAR(100) NOT NULL,
+    state VARCHAR(100),
+    postal_code VARCHAR(20) NOT NULL,
+    country VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 20. Notification Templates Table
+CREATE TABLE notification_templates (
+    template_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    subject VARCHAR(255) NOT NULL,
+    content TEXT NOT NULL,
+    type VARCHAR(50) CHECK (type IN ('email', 'sms', 'push')) NOT NULL,
+    variables JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 21. User Notifications Table
+CREATE TABLE user_notifications (
+    notification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    template_id UUID NOT NULL REFERENCES notification_templates(template_id),
+    data JSONB, -- Data used to fill template variables
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    read_at TIMESTAMP WITH TIME ZONE
+);
+
+-- 22. API tokens for developers
+CREATE TABLE api_tokens (
+    token_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    token VARCHAR(255) NOT NULL UNIQUE,
+    name VARCHAR(100) NOT NULL,
+    permissions JSONB,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 23. Product Tags Table
+CREATE TABLE tags (
+    tag_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(50) NOT NULL UNIQUE,
+    slug VARCHAR(50) NOT NULL UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 24. Product-Tag Relation Table
+CREATE TABLE product_tags (
+    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+    tag_id UUID NOT NULL REFERENCES tags(tag_id) ON DELETE CASCADE,
+    PRIMARY KEY (product_id, tag_id)
+);
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- indexes.sql: Optimized indexes for e-commerce database
+
+-- Users Table Indexes
+CREATE INDEX idx_users_username ON users(username);
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
+CREATE INDEX idx_users_account_status ON users(account_status);
+CREATE INDEX idx_users_created_at ON users(created_at);
+
+-- Categories Table Indexes
+CREATE INDEX idx_categories_parent_id ON categories(parent_id);
+CREATE INDEX idx_categories_is_active ON categories(is_active);
+
+-- Products Table Indexes
+CREATE INDEX idx_products_name ON products(name);
+CREATE INDEX idx_products_sku ON products(sku);
+CREATE INDEX idx_products_category_id ON products(category_id);
+CREATE INDEX idx_products_seller_id ON products(seller_id);
+CREATE INDEX idx_products_is_active ON products(is_active);
+CREATE INDEX idx_products_is_featured ON products(is_featured);
+CREATE INDEX idx_products_price ON products(price);
+CREATE INDEX idx_products_created_at ON products(created_at);
+-- This index helps with price range searches, a common filter in e-commerce
+CREATE INDEX idx_products_price_active_category ON products(price, is_active, category_id);
+
+-- Product Images Table Indexes
+CREATE INDEX idx_product_images_product_id ON product_images(product_id);
+CREATE INDEX idx_product_images_is_primary ON product_images(is_primary);
+
+-- Product Attributes Table Indexes
+CREATE INDEX idx_product_attributes_product_id ON product_attributes(product_id);
+CREATE INDEX idx_product_attributes_name ON product_attributes(name);
+CREATE INDEX idx_product_attributes_name_value ON product_attributes(name, value);
+
+-- Inventory Table Indexes
+CREATE INDEX idx_inventory_product_id ON inventory(product_id);
+CREATE INDEX idx_inventory_quantity ON inventory(quantity);
+-- Index for low stock alerts
+CREATE INDEX idx_inventory_low_stock ON inventory(quantity) WHERE quantity <= low_stock_threshold;
+
+-- Shopping Cart Table Indexes
+CREATE INDEX idx_shopping_carts_user_id ON shopping_carts(user_id);
+CREATE INDEX idx_shopping_carts_session_id ON shopping_carts(session_id);
+CREATE INDEX idx_shopping_carts_created_at ON shopping_carts(created_at);
+CREATE INDEX idx_shopping_carts_expires_at ON shopping_carts(expires_at);
+
+-- Cart Items Table Indexes
+CREATE INDEX idx_cart_items_cart_id ON cart_items(cart_id);
+CREATE INDEX idx_cart_items_product_id ON cart_items(product_id);
+
+-- Orders Table Indexes
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+CREATE INDEX idx_orders_order_number ON orders(order_number);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_payment_status ON orders(payment_status);
+CREATE INDEX idx_orders_created_at ON orders(created_at);
+CREATE INDEX idx_orders_completed_at ON orders(completed_at);
+-- Composite index for order analytics
+CREATE INDEX idx_orders_status_created_at ON orders(status, created_at);
+
+-- Order Items Table Indexes
+CREATE INDEX idx_order_items_order_id ON order_items(order_id);
+CREATE INDEX idx_order_items_product_id ON order_items(product_id);
+
+-- Payments Table Indexes
+CREATE INDEX idx_payments_order_id ON payments(order_id);
+CREATE INDEX idx_payments_transaction_id ON payments(transaction_id);
+CREATE INDEX idx_payments_status ON payments(status);
+CREATE INDEX idx_payments_created_at ON payments(created_at);
+
+-- Order History Table Indexes
+CREATE INDEX idx_order_history_order_id ON order_history(order_id);
+CREATE INDEX idx_order_history_created_at ON order_history(created_at);
+
+-- Product Reviews Table Indexes
+CREATE INDEX idx_product_reviews_product_id ON product_reviews(product_id);
+CREATE INDEX idx_product_reviews_user_id ON product_reviews(user_id);
+CREATE INDEX idx_product_reviews_rating ON product_reviews(rating);
+CREATE INDEX idx_product_reviews_status ON product_reviews(status);
+-- Index for finding verified purchase reviews
+CREATE INDEX idx_product_reviews_verified_purchase ON product_reviews(is_verified_purchase) WHERE is_verified_purchase = TRUE;
+
+-- Wishlist Table Indexes
+CREATE INDEX idx_wishlists_user_id ON wishlists(user_id);
+
+-- Wishlist Items Table Indexes
+CREATE INDEX idx_wishlist_items_wishlist_id ON wishlist_items(wishlist_id);
+CREATE INDEX idx_wishlist_items_product_id ON wishlist_items(product_id);
+
+-- Discounts Table Indexes
+CREATE INDEX idx_discounts_code ON discounts(code);
+CREATE INDEX idx_discounts_is_active ON discounts(is_active);
+CREATE INDEX idx_discounts_date_range ON discounts(starts_at, ends_at);
+-- This index helps find valid discounts quickly
+CREATE INDEX idx_discounts_active_dates ON discounts(is_active, starts_at, ends_at);
+
+-- User Addresses Table Indexes
+CREATE INDEX idx_user_addresses_user_id ON user_addresses(user_id);
+CREATE INDEX idx_user_addresses_is_default ON user_addresses(is_default);
+
+-- User Notifications Table Indexes
+CREATE INDEX idx_user_notifications_user_id ON user_notifications(user_id);
+CREATE INDEX idx_user_notifications_is_read ON user_notifications(is_read);
+CREATE INDEX idx_user_notifications_created_at ON user_notifications(created_at);
+
+-- API Tokens Table Indexes
+CREATE INDEX idx_api_tokens_user_id ON api_tokens(user_id);
+CREATE INDEX idx_api_tokens_token ON api_tokens(token);
+CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at);
+
+-- Tags Table Indexes
+CREATE INDEX idx_tags_name ON tags(name);
+CREATE INDEX idx_tags_slug ON tags(slug);
+
+-- Partial Index for Fast Access to Active Products
+CREATE INDEX idx_active_products ON products(product_id) WHERE is_active = TRUE;
+
+-- Full Text Search for Products
+-- Enable the extension if not already enabled
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- Create GIN index for full-text search on product names and descriptions
+CREATE INDEX idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
+CREATE INDEX idx_products_description_trgm ON products USING GIN (description gin_trgm_ops);
+
+-- Create a GIN index for JSONB fields
+CREATE INDEX idx_product_attributes_jsonb ON product_attributes USING GIN (value jsonb_path_ops) WHERE jsonb_typeof(value) = 'object';
+CREATE INDEX idx_order_items_product_data ON order_items USING GIN (product_data);
+
+
+
+
+
+
+
+
+
+
+// server/src/config/db.js
+const { Pool } = require('pg');
+const logger = require('../utils/logger');
+const { db: dbConfig } = require('./environment');
+
+// Create PostgreSQL connection pool
+const pool = new Pool({
+  user: dbConfig.user,
+  host: dbConfig.host,
+  database: dbConfig.database,
+  password: dbConfig.password,
+  port: dbConfig.port,
+  // Connection pool settings
+  max: 20, // Maximum number of clients in the pool
+  idleTimeoutMillis: 30000, // How long a client is allowed to remain idle before being closed
+  connectionTimeoutMillis: 2000, // How long to wait for a connection
+});
+
+// Test the connection
+pool.on('connect', () => {
+  logger.info('Connected to PostgreSQL database');
+});
+
+pool.on('error', (err) => {
+  logger.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
+
+/**
+ * Execute SQL query with optional parameters
+ * @param {string} text - SQL query text
+ * @param {Array} params - Query parameters
+ * @param {Object} options - Additional options (transaction client, etc.)
+ * @returns {Promise<Object>} Query result
+ */
+const query = async (text, params, options = {}) => {
+  const start = Date.now();
+  const client = options.client || pool;
+  
+  try {
+    const result = await client.query(text, params);
+    const duration = Date.now() - start;
+    
+    // Log the query for debugging/performance monitoring
+    logger.debug('Executed query', { 
+      text, 
+      duration, 
+      rows: result.rowCount,
+      // Don't log params in production as they may contain sensitive data
+      ...(process.env.NODE_ENV !== 'production' && { params })
+    });
+    
+    return result;
+  } catch (error) {
+    logger.error('Database query error', { 
+      text, 
+      error: error.message,
+      code: error.code
+    });
+    throw error;
+  }
+};
+
+/**
+ * Begin a database transaction
+ * @returns {Promise<Object>} Client with transaction
+ */
+const beginTransaction = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+};
+
+/**
+ * Commit a database transaction
+ * @param {Object} client - Client with active transaction
+ */
+const commitTransaction = async (client) => {
+  try {
+    await client.query('COMMIT');
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * Rollback a database transaction
+ * @param {Object} client - Client with active transaction
+ */
+const rollbackTransaction = async (client) => {
+  try {
+    await client.query('ROLLBACK');
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * Execute queries within a transaction
+ * @param {Function} callback - Function that receives transaction client and executes queries
+ * @returns {Promise<*>} Result from the callback function
+ */
+const withTransaction = async (callback) => {
+  const client = await beginTransaction();
+  try {
+    const result = await callback(client);
+    await commitTransaction(client);
+    return result;
+  } catch (error) {
+    await rollbackTransaction(client);
+    throw error;
+  }
+};
+
+module.exports = {
+  pool,
+  query,
+  withTransaction,
+  beginTransaction,
+  commitTransaction,
+  rollbackTransaction
+};
+
+
+
+
+
+
+
+
+// server/src/config/environment.js
+require('dotenv').config();
+
+module.exports = {
+  // Server configuration
+  server: {
+    port: process.env.PORT || 3000,
+    nodeEnv: process.env.NODE_ENV || 'development',
+    apiPrefix: process.env.API_PREFIX || '/api/v1',
+  },
+  
+  // Database configuration
+  db: {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432'),
+    database: process.env.DB_NAME || 'ecommerce',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+    ssl: process.env.DB_SSL === 'true',
+  },
+  
+  // JWT Authentication
+  jwt: {
+    secret: process.env.JWT_SECRET || 'supersecretkey', // Change in production
+    expiresIn: process.env.JWT_EXPIRES_IN || '24h',
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+  },
+  
+  // Security configurations
+  security: {
+    saltRounds: parseInt(process.env.SALT_ROUNDS || '10'),
+    corsOrigin: process.env.CORS_ORIGIN || '*',
+  },
+  
+  // Pagination default settings
+  pagination: {
+    defaultLimit: parseInt(process.env.DEFAULT_LIMIT || '20'),
+    maxLimit: parseInt(process.env.MAX_LIMIT || '100'),
+  },
+  
+  // Redis cache configuration (if used)
+  redis: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379'),
+    password: process.env.REDIS_PASSWORD || '',
+    ttl: parseInt(process.env.REDIS_TTL || '3600'),
+  },
+  
+  // Logger configuration
+  logger: {
+    level: process.env.LOG_LEVEL || 'info',
+    prettyPrint: process.env.NODE_ENV !== 'production',
+  },
+  
+  // Payment gateway configurations
+  payment: {
+    stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',
+    stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    paypalClientId: process.env.PAYPAL_CLIENT_ID || '',
+    paypalSecret: process.env.PAYPAL_SECRET || '',
+    paypalMode: process.env.PAYPAL_MODE || 'sandbox',
+  },
+  
+  // Email service configuration
+  email: {
+    from: process.env.EMAIL_FROM || 'no-reply@ecommerce.com',
+    host: process.env.EMAIL_HOST || '',
+    port: parseInt(process.env.EMAIL_PORT || '587'),
+    secure: process.env.EMAIL_SECURE === 'true',
+    auth: {
+      user: process.env.EMAIL_USER || '',
+      pass: process.env.EMAIL_PASS || '',
+    },
+  },
+};
+
+
+
+
+
+
+
+
+
+// server/src/utils/logger.js
+const { createLogger, format, transports } = require('winston');
+const { logger: loggerConfig } = require('../config/environment');
+
+// Define log format
+const logFormat = format.combine(
+  format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+  format.errors({ stack: true }),
+  format.splat(),
+  format.json()
+);
+
+// Create the logger instance
+const logger = createLogger({
+  level: loggerConfig.level,
+  format: logFormat,
+  defaultMeta: { service: 'ecommerce-api' },
+  transports: [
+    // Write all logs to console
+    new transports.Console({
+      format: loggerConfig.prettyPrint 
+        ? format.combine(
+            format.colorize(),
+            format.printf(({ timestamp, level, message, ...meta }) => {
+              // Extract SQL query details if available
+              const sqlDetails = meta.text 
+                ? `\n  Query: ${meta.text}${meta.params ? `\n  Params: ${JSON.stringify(meta.params)}` : ''}${meta.duration ? `\n  Duration: ${meta.duration}ms` : ''}` 
+                : '';
+              
+              // Extract error details if available
+              const errorDetails = meta.error ? `\n  Error: ${meta.error}${meta.code ? ` (${meta.code})` : ''}` : '';
+              
+              // Construct log output
+              return `${timestamp} ${level}: ${message}${sqlDetails}${errorDetails}${Object.keys(meta).length > 0 && !meta.text && !meta.error ? `\n  ${JSON.stringify(meta)}` : ''}`;
+            })
+          )
+        : format.json()
+    }),
+    
+    // In production, add additional transports:
+    // - Error logs to separate file
+    ...(process.env.NODE_ENV === 'production' ? [
+      new transports.File({ 
+        filename: 'logs/error.log', 
+        level: 'error',
+        maxsize: 10485760, // 10MB
+        maxFiles: 5,
+      }),
+      // All logs to combined file
+      new transports.File({ 
+        filename: 'logs/combined.log',
+        maxsize: 10485760, // 10MB
+        maxFiles: 5,
+      })
+    ] : [])
+  ]
+});
+
+// Add special handling for SQL query logging
+logger.sqlQuery = (query, params, duration, rows) => {
+  logger.debug('SQL Query', {
+    text: query,
+    params,
+    duration,
+    rows
+  });
+};
+
+module.exports = logger;
+
+
+
+
+
+
+
+
+
+
+
+// server/src/utils/sqlBuilder.js
+/**
+ * SQL Query Builder
+ * Provides utilities for dynamically building SQL queries
+ */
+class SqlBuilder {
+  /**
+   * Create a WHERE clause from filter conditions
+   * @param {Object} filters - Key-value pairs of filter conditions
+   * @param {number} [startParamIndex=1] - Starting index for parameterized queries
+   * @returns {Object} Object containing where clause and parameters
+   */
+  static buildWhereClause(filters, startParamIndex = 1) {
+    if (!filters || Object.keys(filters).length === 0) {
+      return { whereClause: '', params: [] };
+    }
+
+    const conditions = [];
+    const params = [];
+    let paramIndex = startParamIndex;
+
+    for (const [key, value] of Object.entries(filters)) {
+      // Skip null or undefined values
+      if (value === null || value === undefined) continue;
+
+      // Handle special operators like IN, BETWEEN, etc.
+      if (typeof value === 'object' && !Array.isArray(value)) {
+        const { operator, value: operatorValue } = value;
+        
+        if (operator && operatorValue !== null && operatorValue !== undefined) {
+          switch (operator.toUpperCase()) {
+            case 'IN':
+              if (Array.isArray(operatorValue) && operatorValue.length > 0) {
+                const placeholders = operatorValue.map(() => `$${paramIndex++}`).join(', ');
+                conditions.push(`${key} IN (${placeholders})`);
+                params.push(...operatorValue);
+              }
+              break;
+            case 'BETWEEN':
+              if (Array.isArray(operatorValue) && operatorValue.length === 2) {
+                conditions.push(`${key} BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
+                params.push(operatorValue[0], operatorValue[1]);
+                paramIndex += 2;
+              }
+              break;
+            case 'LIKE':
+            case 'ILIKE':
+              conditions.push(`${key} ${operator} $${paramIndex++}`);
+              params.push(`%${operatorValue}%`);
+              break;
+            case '>':
+            case '>=':
+            case '<':
+            case '<=':
+            case '!=':
+              conditions.push(`${key} ${operator} $${paramIndex++}`);
+              params.push(operatorValue);
+              break;
+            case 'IS NULL':
+              conditions.push(`${key} IS NULL`);
+              break;
+            case 'IS NOT NULL':
+              conditions.push(`${key} IS NOT NULL`);
+              break;
+            default:
+              conditions.push(`${key} = $${paramIndex++}`);
+              params.push(operatorValue);
+          }
+        }
+      } else if (Array.isArray(value)) {
+        // Handle array values as IN conditions
+        if (value.length > 0) {
+          const placeholders = value.map(() => `$${paramIndex++}`).join(', ');
+          conditions.push(`${key} IN (${placeholders})`);
+          params.push(...value);
+        }
+      } else {
+        // Handle simple equality
+        conditions.push(`${key} = $${paramIndex++}`);
+        params.push(value);
+      }
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    return { whereClause, params };
+  }
+
+  /**
+   * Build ORDER BY clause from sort parameters
+   * @param {Object|Array|string} sort - Sort configuration
+   * @param {string} defaultSort - Default sort field and direction
+   * @returns {string} ORDER BY clause
+   */
+  static buildOrderByClause(sort, defaultSort = 'created_at DESC') {
+    if (!sort) {
+      return `ORDER BY ${defaultSort}`;
+    }
+
+    let sortFields = [];
+
+    if (typeof sort === 'string') {
+      // Simple string sorting e.g. 'price ASC'
+      sortFields.push(sort);
+    } else if (Array.isArray(sort)) {
+      // Array of sort fields e.g. ['price ASC', 'name DESC']
+      sortFields = sort;
+    } else if (typeof sort === 'object') {
+      // Object with field:direction pairs e.g. { price: 'ASC', name: 'DESC' }
+      sortFields = Object.entries(sort).map(([field, direction]) => 
+        `${field} ${direction.toUpperCase()}`
+      );
+    }
+
+    return sortFields.length > 0
+      ? `ORDER BY ${sortFields.join(', ')}`
+      : `ORDER BY ${defaultSort}`;
+  }
+
+  /**
+   * Build LIMIT and OFFSET clause for pagination
+   * @param {number} page - Page number (1-based indexing)
+   * @param {number} limit - Number of records per page
+   * @returns {Object} Object containing limit, offset and pagination info
+   */
+  static buildPaginationClause(page = 1, limit = 20) {
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.max(1, parseInt(limit, 10));
+    const offset = (pageNum - 1) * limitNum;
+
+    return {
+      limitClause: `LIMIT ${limitNum} OFFSET ${offset}`,
+      limit: limitNum,
+      offset,
+      page: pageNum
+    };
+  }
+
+  /**
+   * Build INSERT query
+   * @param {string} table - Table name
+   * @param {Object} data - Data to insert
+   * @returns {Object} SQL query and parameters
+   */
+  static buildInsertQuery(table, data) {
+    const columns = Object.keys(data);
+    const values = Object.values(data);
+    
+    const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+    
+    const query = `
+      INSERT INTO ${table} (${columns.join(', ')})
+      VALUES (${placeholders})
+      RETURNING *
+    `;
+    
+    return { query, values };
+  }
+
+  /**
+   * Build UPDATE query
+   * @param {string} table - Table name
+   * @param {Object} data - Data to update
+   * @param {Object} where - Where conditions
+   * @returns {Object} SQL query and parameters
+   */
+  static buildUpdateQuery(table, data, where) {
+    const columns = Object.keys(data);
+    const values = Object.values(data);
+    
+    const setClause = columns
+      .map((col, index) => `${col} = $${index + 1}`)
+      .join(', ');
+    
+    let paramCount = values.length;
+    const whereConditions = [];
+    const whereValues = [];
+    
+    for (const [key, value] of Object.entries(where)) {
+      whereConditions.push(`${key} = $${++paramCount}`);
+      whereValues.push(value);
+    }
+    
+    const query = `
+      UPDATE ${table}
+      SET ${setClause}
+      WHERE ${whereConditions.join(' AND ')}
+      RETURNING *
+    `;
+    
+    return { query, values: [...values, ...whereValues] };
+  }
+
+  /**
+   * Build a SELECT query
+   * @param {string} table - Table name
+   * @param {Array} columns - Columns to select
+   * @param {Object} filters - Filter conditions
+   * @param {Object} options - Additional options (sort, pagination)
+   * @returns {Object} SQL query and parameters
+   */
+  static buildSelectQuery(table, columns = ['*'], filters = {}, options = {}) {
+    const columnsStr = Array.isArray(columns) ? columns.join(', ') : columns;
+    const { whereClause, params } = this.buildWhereClause(filters);
+    
+    const orderBy = options.sort
+      ? this.buildOrderByClause(options.sort)
+      : '';
+    
+    const pagination = options.pagination
+      ? this.buildPaginationClause(options.pagination.page, options.pagination.limit)
+      : { limitClause: '' };
+    
+    const query = `
+      SELECT ${columnsStr}
+      FROM ${table}
+      ${whereClause}
+      ${orderBy}
+      ${pagination.limitClause}
+    `;
+    
+    return { 
+      query, 
+      params, 
+      pagination: options.pagination ? pagination : null 
+    };
+  }
+
+  /**
+   * Build a query for fetching total count (for pagination)
+   * @param {string} table - Table name
+   * @param {Object} filters - Filter conditions
+   * @returns {Object} SQL query and parameters
+   */
+  static buildCountQuery(table, filters = {}) {
+    const { whereClause, params } = this.buildWhereClause(filters);
+    
+    const query = `
+      SELECT COUNT(*) AS total
+      FROM ${table}
+      ${whereClause}
+    `;
+    
+    return { query, params };
+  }
+
+  /**
+   * Generate a dynamically parameterized IN clause
+   * @param {Array} items - Array of items for the IN clause
+   * @param {number} startIndex - Starting parameter index
+   * @returns {Object} parameterized IN clause and updated index
+   */
+  static generateInClause(items, startIndex = 1) {
+    if (!items || items.length === 0) {
+      return { inClause: '(NULL)', params: [], nextIndex: startIndex };
+    }
+
+    const placeholders = [];
+    const params = [];
+    let paramIndex = startIndex;
+
+    for (const item of items) {
+      placeholders.push(`$${paramIndex++}`);
+      params.push(item);
+    }
+
+    return {
+      inClause: `(${placeholders.join(', ')})`,
+      params,
+      nextIndex: paramIndex
+    };
+  }
+
+  /**
+   * Generate a dynamically parameterized VALUES clause for multi-row insert
+   * @param {Array} items - Array of objects to insert
+   * @param {Array} columns - Column names
+   * @returns {Object} parameterized VALUES clause and parameters
+   */
+  static generateBulkInsertClause(items, columns) {
+    if (!items || items.length === 0 || !columns || columns.length === 0) {
+      return { valuesClause: '', params: [] };
+    }
+
+    const params = [];
+    let paramIndex = 1;
+    const valueRows = [];
+
+    for (const item of items) {
+      const rowPlaceholders = [];
+      for (const column of columns) {
+        rowPlaceholders.push(`$${paramIndex++}`);
+        params.push(item[column] ?? null);
+      }
+      valueRows.push(`(${rowPlaceholders.join(', ')})`);
+    }
+
+    return {
+      valuesClause: valueRows.join(',\n'),
+      params
+    };
+  }
+
+  /**
+   * Build JSON/JSONB query conditions
+   * @param {string} column - JSON column name
+   * @param {string} path - JSON path
+   * @param {*} value - Value to compare against
+   * @param {string} [operator='='] - Comparison operator
+   * @returns {Object} SQL fragment and value
+   */
+  static jsonCondition(column, path, value, operator = '=') {
+    // For PostgreSQL JSONB operations
+    const pathParts = path.split('.');
+    let sqlFragment;
+    
+    if (pathParts.length === 1) {
+      // Simple key access
+      sqlFragment = `${column}->>'${pathParts[0]}' ${operator} $%i`;
+    } else {
+      // Nested key access
+      const lastKey = pathParts.pop();
+      const jsonPath = pathParts.map(part => `'${part}'`).join('->');
+      sqlFragment = `${column}->${jsonPath}->>'${lastKey}' ${operator} $%i`;
+    }
+    
+    return { sqlFragment, value };
+  }
+}
+
+module.exports = SqlBuilder;
+
+
+
+
+
+
+
+
+
+
+
+
+// server/src/utils/error.js
+/**
+ * Custom error classes for the application
+ */
+
+/**
+ * Base application error
+ */
+class AppError extends Error {
+  constructor(message, statusCode = 500, errorCode = 'INTERNAL_ERROR') {
+    super(message);
+    this.statusCode = statusCode;
+    this.errorCode = errorCode;
+    this.isOperational = true; // Operational errors are expected and can be handled gracefully
+    
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
+ * Database error
+ */
+class DatabaseError extends AppError {
+  constructor(message = 'Database error occurred', details = null) {
+    super(message, 500, 'DATABASE_ERROR');
+    this.details = details;
+  }
+}
+
+/**
+ * Not found error
+ */
+class NotFoundError extends AppError {
+  constructor(message = 'Resource not found', resource = null) {
+    super(message, 404, 'NOT_FOUND');
+    this.resource = resource;
+  }
+}
+
+/**
+ * Validation error
+ */
+class ValidationError extends AppError {
+  constructor(message = 'Validation failed', errors = []) {
+    super(message, 400, 'VALIDATION_ERROR');
+    this.errors = errors;
+  }
+}
+
+/**
+ * Authentication error
+ */
+class AuthenticationError extends AppError {
+  constructor(message = 'Authentication failed') {
+    super(message, 401, 'AUTHENTICATION_ERROR');
+  }
+}
+
+/**
+ * Authorization error
+ */
+class AuthorizationError extends AppError {
+  constructor(message = 'You do not have permission to perform this action') {
+    super(message, 403, 'AUTHORIZATION_ERROR');
+  }
+}
+
+/**
+ * Conflict error
+ */
+class ConflictError extends AppError {
+  constructor(message = 'Resource already exists', resource = null) {
+    super(message, 409, 'CONFLICT_ERROR');
+    this.resource = resource;
+  }
+}
+
+/**
+ * Rate limit error
+ */
+class RateLimitError extends AppError {
+  constructor(message = 'Too many requests', retryAfter = null) {
+    super(message, 429, 'RATE_LIMIT_ERROR');
+    this.retryAfter = retryAfter;
+  }
+}
+
+/**
+ * Bad request error
+ */
+class BadRequestError extends AppError {
+  constructor(message = 'Bad request') {
+    super(message, 400, 'BAD_REQUEST');
+  }
+}
+
+/**
+ * External service error
+ */
+class ExternalServiceError extends AppError {
+  constructor(message = 'External service error', service = null) {
+    super(message, 502, 'EXTERNAL_SERVICE_ERROR');
+    this.service = service;
+  }
+}
+
+/**
+ * Format error for consistent API response
+ * @param {Error} error - Error object
+ * @returns {Object} Formatted error response
+ */
+const formatError = (error) => {
+  // Default error structure for unhandled errors
+  const formattedError = {
+    status: 'error',
+    code: error.errorCode || 'INTERNAL_ERROR',
+    message: error.message || 'An unexpected error occurred',
+  };
+
+  // Add additional details for operational errors
+  if (error.isOperational) {
+    if (error instanceof ValidationError && error.errors) {
+      formattedError.errors = error.errors;
+    }
+    
+    if (error instanceof NotFoundError && error.resource) {
+      formattedError.resource = error.resource;
+    }
+    
+    if (error instanceof ConflictError && error.resource) {
+      formattedError.resource = error.resource;
+    }
+    
+    if (error instanceof RateLimitError && error.retryAfter) {
+      formattedError.retryAfter = error.retryAfter;
+    }
+    
+    if (error instanceof ExternalServiceError && error.service) {
+      formattedError.service = error.service;
+    }
+    
+    if (error instanceof DatabaseError && error.details) {
+      formattedError.details = error.details;
+    }
+  }
+
+  return formattedError;
+};
+
+module.exports = {
+  AppError,
+  DatabaseError,
+  NotFoundError,
+  ValidationError,
+  AuthenticationError,
+  AuthorizationError,
+  ConflictError,
+  RateLimitError,
+  BadRequestError,
+  ExternalServiceError,
+  formatError
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+// server/src/db/queries/products.js
+const db = require('../../config/db');
+const SqlBuilder = require('../../utils/sqlBuilder');
+const logger = require('../../utils/logger');
+const { NotFoundError, DatabaseError } = require('../../utils/error');
+
+/**
+ * Product Queries
+ */
+const productQueries = {
+  /**
+   * Get product by ID with complete details
+   * @param {string} productId - UUID of the product
+   * @returns {Promise<Object>} Product with all related details
+   */
+  getProductById: async (productId) => {
+    try {
+      // Main product query with detailed information
+      const productQuery = `
+        SELECT 
+          p.*,
+          c.name AS category_name,
+          COALESCE(i.quantity, 0) AS stock_quantity,
+          COALESCE(i.reserved_quantity, 0) AS reserved_quantity,
+          COALESCE(r.avg_rating, 0) AS average_rating,
+          COALESCE(r.review_count, 0) AS review_count,
+          s.username AS seller_username,
+          s.email AS seller_email
+        FROM 
+          products p
+        LEFT JOIN 
+          categories c ON p.category_id = c.category_id
+        LEFT JOIN 
+          inventory i ON p.product_id = i.product_id
+        LEFT JOIN (
+          SELECT 
+            product_id, 
+            ROUND(AVG(rating), 1) AS avg_rating,
+            COUNT(*) AS review_count
+          FROM 
+            product_reviews
+          WHERE 
+            status = 'approved'
+          GROUP BY 
+            product_id
+        ) r ON p.product_id = r.product_id
+        LEFT JOIN
+          users s ON p.seller_id = s.user_id
+        WHERE 
+          p.product_id = $1
+      `;
+
+      const productResult = await db.query(productQuery, [productId]);
+      
+      if (productResult.rows.length === 0) {
+        throw new NotFoundError(`Product with ID ${productId} not found`);
+      }
+      
+      const product = productResult.rows[0];
+      
+      // Get product images
+      const imagesQuery = `
+        SELECT 
+          image_id, url, alt_text, is_primary, display_order
+        FROM 
+          product_images
+        WHERE 
+          product_id = $1
+        ORDER BY 
+          is_primary DESC, display_order ASC
+      `;
+      
+      const imagesResult = await db.query(imagesQuery, [productId]);
+      product.images = imagesResult.rows;
+      
+      // Get product attributes
+      const attributesQuery = `
+        SELECT 
+          attribute_id, name, value
+        FROM 
+          product_attributes
+        WHERE 
+          product_id = $1
+      `;
+      
+      const attributesResult = await db.query(attributesQuery, [productId]);
+      product.attributes = attributesResult.rows;
+      
+      // Get product tags
+      const tagsQuery = `
+        SELECT 
+          t.tag_id, t.name, t.slug
+        FROM 
+          tags t
+        JOIN 
+          product_tags pt ON t.tag_id = pt.tag_id
+        WHERE 
+          pt.product_id = $1
+      `;
+      
+      const tagsResult = await db.query(tagsQuery, [productId]);
+      product.tags = tagsResult.rows;
+      
+      // Get active discounts for this product
+      const discountsQuery = `
+        SELECT 
+          d.discount_id, d.code, d.type, d.value, 
+          d.min_purchase_amount, d.max_discount_amount,
+          d.starts_at, d.ends_at
+        FROM 
+          discounts d
+        JOIN 
+          discount_products dp ON d.discount_id = dp.discount_id
+        WHERE 
+          dp.product_id = $1
+          AND d.is_active = TRUE
+          AND d.starts_at <= NOW()
+          AND d.ends_at > NOW()
+          AND (d.usage_limit IS NULL OR d.usage_count < d.usage_limit)
+      `;
+      
+      const discountsResult = await db.query(discountsQuery, [productId]);
+      product.discounts = discountsResult.rows;
+      
+      return product;
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      logger.error('Error fetching product details', { 
+        error: error.message, 
+        productId 
+      });
+      throw new DatabaseError('Failed to retrieve product details');
+    }
+  },
+
+  /**
+   * Search products with advanced filtering, sorting and pagination
+   * @param {Object} filters - Search and filter parameters
+   * @param {Object} options - Sorting and pagination options
+   * @returns {Promise<Object>} Products matching criteria and pagination metadata
+   */
+  searchProducts: async (filters = {}, options = {}) => {
+    try {
+      const {
+        query: text,
+        category_id,
+        price_min,
+        price_max,
+        brand,
+        tags,
+        attributes,
+        in_stock,
+        rating_min,
+        seller_id,
+        is_featured,
+        created_after,
+        created_before,
+        sort = 'created_at DESC',
+        page = 1,
+        limit = 20
+      } = filters;
+      
+      // Base selection columns
+      const selectColumns = `
+        p.product_id, p.name, p.description, p.price, p.compare_price,
+        p.brand, p.is_featured, p.created_at,
+        c.name AS category_name,
+        COALESCE(i.quantity, 0) AS stock_quantity,
+        COALESCE(r.avg_rating, 0) AS average_rating,
+        COALESCE(r.review_count, 0) AS review_count,
+        (
+          SELECT pi.url 
+          FROM product_images pi 
+          WHERE pi.product_id = p.product_id AND pi.is_primary = TRUE 
+          LIMIT 1
+        ) AS primary_image
+      `;
+      
+      // Base query with JOINs
+      let baseQuery = `
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.category_id
+        LEFT JOIN inventory i ON p.product_id = i.product_id
+        LEFT JOIN (
+          SELECT 
+            product_id, 
+            ROUND(AVG(rating), 1) AS avg_rating,
+            COUNT(*) AS review_count
+          FROM 
+            product_reviews
+          WHERE 
+            status = 'approved'
+          GROUP BY 
+            product_id
+        ) r ON p.product_id = r.product_id
+      `;
+      
+      // Track query parameters
+      const queryParams = [];
+      const whereClauses = ['p.is_active = TRUE'];
+      let paramIndex = 1;
+      
+      // Text search on product name and description
+      if (text && text.trim()) {
+        whereClauses.push(`(
+          p.name ILIKE $${paramIndex} 
+          OR p.description ILIKE $${paramIndex} 
+          OR p.sku ILIKE $${paramIndex}
+        )`);
+        queryParams.push(`%${text.trim()}%`);
+        paramIndex++;
+      }
+      
+      // Category filter
+      if (category_id) {
+        // Include child categories in search
+        baseQuery += `
+          LEFT JOIN (
+            WITH RECURSIVE category_tree AS (
+              SELECT category_id FROM categories WHERE category_id = $${paramIndex}
+              UNION ALL
+              SELECT c.category_id FROM categories c
+              JOIN category_tree ct ON c.parent_id = ct.category_id
+            )
+            SELECT category_id FROM category_tree
+          ) ct ON p.category_id = ct.category_id
+        `;
+        whereClauses.push(`ct.category_id IS NOT NULL`);
+        queryParams.push(category_id);
+        paramIndex++;
+      }
+      
+      // Price range
+      if (price_min !== undefined && price_min !== null) {
+        whereClauses.push(`p.price >= $${paramIndex}`);
+        queryParams.push(price_min);
+        paramIndex++;
+      }
+      
+      if (price_max !== undefined && price_max !== null) {
+        whereClauses.push(`p.price <= $${paramIndex}`);
+        queryParams.push(price_max);
+        paramIndex++;
+      }
+      
+      // Brand filter
+      if (brand) {
+        if (Array.isArray(brand)) {
+          const placeholders = brand.map((_, idx) => `$${paramIndex + idx}`).join(', ');
+          whereClauses.push(`p.brand IN (${placeholders})`);
+          queryParams.push(...brand);
+          paramIndex += brand.length;
+        } else {
+          whereClauses.push(`p.brand = $${paramIndex}`);
+          queryParams.push(brand);
+          paramIndex++;
+        }
+      }
+      
+      // Tags filter
+      if (tags && Array.isArray(tags) && tags.length > 0) {
+        baseQuery += `
+          JOIN (
+            SELECT pt.product_id
+            FROM product_tags pt
+            JOIN tags t ON pt.tag_id = t.tag_id
+            WHERE t.name = ANY($${paramIndex}::varchar[])
+            GROUP BY pt.product_id
+            HAVING COUNT(DISTINCT t.name) = $${paramIndex + 1}
+          ) matching_tags ON p.product_id = matching_tags.product_id
+        `;
+        queryParams.push(tags, tags.length);
+        paramIndex += 2;
+      }
+      
+      // Attributes filter
+      if (attributes && typeof attributes === 'object') {
+        const attrEntries = Object.entries(attributes);
+        if (attrEntries.length > 0) {
+          attrEntries.forEach(([key, value], idx) => {
+            baseQuery += `
+              JOIN product_attributes pa${idx} ON p.product_id = pa${idx}.product_id
+              AND pa${idx}.name = $${paramIndex} AND pa${idx}.value = $${paramIndex + 1}
+            `;
+            queryParams.push(key, value);
+            paramIndex += 2;
+          });
+        }
+      }
+      
+      // Stock availability
+      if (in_stock === true) {
+        whereClauses.push(`(i.quantity > i.reserved_quantity OR p.is_physical = FALSE)`);
+      }
+      
+      // Minimum rating
+      if (rating_min !== undefined && rating_min !== null) {
+        whereClauses.push(`r.avg_rating >= $${paramIndex}`);
+        queryParams.push(rating_min);
+        paramIndex++;
+      }
+      
+      // Seller filter
+      if (seller_id) {
+        whereClauses.push(`p.seller_id = $${paramIndex}`);
+        queryParams.push(seller_id);
+        paramIndex++;
+      }
+      
+      // Featured products
+      if (is_featured !== undefined) {
+        whereClauses.push(`p.is_featured = $${paramIndex}`);
+        queryParams.push(is_featured);
+        paramIndex++;
+      }
+      
+      // Creation date range
+      if (created_after) {
+        whereClauses.push(`p.created_at >= $${paramIndex}`);
+        queryParams.push(created_after);
+        paramIndex++;
+      }
+      
+      if (created_before) {
+        whereClauses.push(`p.created_at <= $${paramIndex}`);
+        queryParams.push(created_before);
+        paramIndex++;
+      }
+      
+      // Construct WHERE clause
+      const whereClause = whereClauses.length > 0 
+        ? `WHERE ${whereClauses.join(' AND ')}` 
+        : '';
+      
+      // Construct ORDER BY clause
+      let orderClause;
+      const validSortFields = [
+        'name', 'price', 'created_at', 'average_rating',
+        'stock_quantity', 'review_count'
+      ];
+      
+      if (typeof sort === 'string') {
+        const [field, direction] = sort.split(' ');
+        const validField = validSortFields.includes(field) ? field : 'created_at';
+        const validDirection = ['ASC', 'DESC'].includes(direction?.toUpperCase()) 
+          ? direction.toUpperCase() 
+          : 'DESC';
+          
+        // Handle special fields that require NULLS LAST
+        if (['average_rating', 'review_count'].includes(validField)) {
+          orderClause = `ORDER BY ${validField} ${validDirection} NULLS LAST`;
+        } else {
+          orderClause = `ORDER BY ${validField} ${validDirection}`;
+        }
+      } else {
+        orderClause = `ORDER BY created_at DESC`;
+      }
+      
+      // Pagination
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+      const paginationClause = `LIMIT ${parseInt(limit)} OFFSET ${offset}`;
+      
+      // Construct final queries
+      const countQuery = `
+        SELECT COUNT(DISTINCT p.product_id) AS total
+        ${baseQuery}
+        ${whereClause}
+      `;
+      
+      const searchQuery = `
+        SELECT ${selectColumns}
+        ${baseQuery}
+        ${whereClause}
+        GROUP BY p.product_id, c.name, i.quantity, r.avg_rating, r.review_count
+        ${orderClause}
+        ${paginationClause}
+      `;
+      
+      // Execute queries in parallel
+      const [countResult, productsResult] = await Promise.all([
+        db.query(countQuery, queryParams),
+        db.query(searchQuery, queryParams)
+      ]);
+      
+      const total = parseInt(countResult.rows[0].total || '0');
+      const totalPages = Math.ceil(total / limit);
+      
+      return {
+        products: productsResult.rows,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalPages
+        }
+      };
+    } catch (error) {
+      logger.error('Error searching products', { error: error.message });
+      throw new DatabaseError('Failed to search products', error.message);
+    }
+  },
+
+  /**
+   * Create a new product with inventory and attributes
+   * @param {Object} productData - Product information
+   * @returns {Promise<Object>} Created product
+   */
+  createProduct: async (productData) => {
+    const client = await db.beginTransaction();
+    
+    try {
+      const {
+        name,
+        description,
+        sku,
+        price,
+        compare_price,
+        cost_price,
+        category_id,
+        seller_id,
+        brand,
+        weight,
+        dimensions,
+        is_physical,
+        is_active,
+        is_featured,
+        attributes,
+        tags,
+        inventory,
+        images
+      } = productData;
+      
+      // Insert product
+      const insertProductQuery = `
+        INSERT INTO products (
+          name, description, sku, price, compare_price, cost_price,
+          category_id, seller_id, brand, weight, dimensions,
+          is_physical, is_active, is_featured
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+        )
+        RETURNING *
+      `;
+      
+      const productValues = [
+        name,
+        description,
+        sku,
+        price,
+        compare_price || null,
+        cost_price || null,
+        category_id,
+        seller_id,
+        brand || null,
+        weight || null,
+        dimensions ? JSON.stringify(dimensions) : null,
+        is_physical !== undefined ? is_physical : true,
+        is_active !== undefined ? is_active : true,
+        is_featured !== undefined ? is_featured : false
+      ];
+      
+      const productResult = await client.query(insertProductQuery, productValues);
+      const product = productResult.rows[0];
+      
+      // Create inventory record
+      if (inventory) {
+        const { quantity, warehouse_location, low_stock_threshold } = inventory;
+        
+        const insertInventoryQuery = `
+          INSERT INTO inventory (
+            product_id, quantity, warehouse_location, low_stock_threshold
+          )
+          VALUES ($1, $2, $3, $4)
+          RETURNING *
+        `;
+        
+        const inventoryValues = [
+          product.product_id,
+          quantity || 0,
+          warehouse_location || null,
+          low_stock_threshold || 5
+        ];
+        
+        const inventoryResult = await client.query(insertInventoryQuery, inventoryValues);
+        product.inventory = inventoryResult.rows[0];
+      }
+      
+      // Create product attributes
+      if (attributes && attributes.length > 0) {
+        const attributeValues = attributes.map(attr => [
+          product.product_id, 
+          attr.name, 
+          attr.value
+        ]);
+        
+        const attributePlaceholders = attributeValues.map((_, idx) => 
+          `($${idx * 3 + 1}, $${idx * 3 + 2}, $${idx * 3 + 3})`
+        ).join(', ');
+        
+        const insertAttributesQuery = `
+          INSERT INTO product_attributes (product_id, name, value)
+          VALUES ${attributePlaceholders}
+          RETURNING *
+        `;
+        
+        const flatAttributeValues = attributeValues.flat();
+        const attributesResult = await client.query(insertAttributesQuery, flatAttributeValues);
+        product.attributes = attributesResult.rows;
+      }
+      
+      // Handle product tags
+      if (tags && tags.length > 0) {
+        // First get or create tags
+        const tagIds = [];
+        
+        for (const tagName of tags) {
+          // Try to find existing tag
+          const findTagQuery = `
+            SELECT tag_id FROM tags WHERE name = $1
+          `;
+          const tagResult = await client.query(findTagQuery, [tagName]);
+          
+          let tagId;
+          if (tagResult.rows.length > 0) {
+            tagId = tagResult.rows[0].tag_id;
+          } else {
+            // Create new tag
+            const slug = tagName.toLowerCase().replace(/\s+/g, '-');
+            const insertTagQuery = `
+              INSERT INTO tags (name, slug)
+              VALUES ($1, $2)
+              RETURNING tag_id
+            `;
+            const newTagResult = await client.query(insertTagQuery, [tagName, slug]);
+            tagId = newTagResult.rows[0].tag_id;
+          }
+          
+          tagIds.push(tagId);
+        }
+        
+        // Associate tags with product
+        if (tagIds.length > 0) {
+          const tagValues = tagIds.map(tagId => [product.product_id, tagId]);
+          const tagPlaceholders = tagValues.map((_, idx) => 
+            `($${idx * 2 + 1}, $${idx * 2 + 2})`
+          ).join(', ');
+          
+          const insertProductTagsQuery = `
+            INSERT INTO product_tags (product_id, tag_id)
+            VALUES ${tagPlaceholders}
+          `;
+          
+          const flatTagValues = tagValues.flat();
+          await client.query(insertProductTagsQuery, flatTagValues);
+          
+          // Fetch the complete tag information
+          const getProductTagsQuery = `
+            SELECT t.tag_id, t.name, t.slug
+            FROM tags t
+            JOIN product_tags pt ON t.tag_id = pt.tag_id
+            WHERE pt.product_id = $1
+          `;
+          const productTagsResult = await client.query(getProductTagsQuery, [product.product_id]);
+          product.tags = productTagsResult.rows;
+        }
+      }
+      
+      // Handle product images
+      if (images && images.length > 0) {
+        const imageValues = images.map((img, idx) => [
+          product.product_id,
+          img.url,
+          img.alt_text || null,
+          img.is_primary === true,
+          img.display_order || idx
+        ]);
+        
+        const imagePlaceholders = imageValues.map((_, idx) => 
+          `($${idx * 5 + 1}, $${idx * 5 + 2}, $${idx * 5 + 3}, $${idx * 5 + 4}, $${idx * 5 + 5})`
+        ).join(', ');
+        
+        const insertImagesQuery = `
+          INSERT INTO product_images (product_id, url, alt_text, is_primary, display_order)
+          VALUES ${imagePlaceholders}
+          RETURNING *
+        `;
+        
+        const flatImageValues = imageValues.flat();
+        const imagesResult = await client.query(insertImagesQuery, flatImageValues);
+        product.images = imagesResult.rows;
+      }
+      
+      await db.commitTransaction(client);
+      return product;
+    } catch (error) {
+      await db.rollbackTransaction(client);
+      logger.error('Error creating product', { error: error.message });
+      throw new DatabaseError('Failed to create product', error.message);
+    }
+  },
+  
+  /**
+   * Get related products based on shared categories, tags, and attributes
+   * @param {string} productId - Product ID
+   * @param {number} limit - Number of related products to return
+   * @returns {Promise<Array>} Related products
+   */
+  getRelatedProducts: async (productId, limit = 6) => {
+    try {
+      const query = `
+        WITH product_info AS (
+          SELECT 
+            category_id,
+            (
+              SELECT ARRAY_AGG(tag_id) 
+              FROM product_tags 
+              WHERE product_id = $1
+            ) AS tag_ids,
+            (
+              SELECT ARRAY_AGG(name) 
+              FROM product_attributes 
+              WHERE product_id = $1
+            ) AS attribute_names
+        FROM 
+          products
+        WHERE 
+          product_id = $1
+        ),
+        related_score AS (
+          SELECT 
+            p.product_id,
+            p.name,
+            p.price,
+            p.brand,
+            (
+              SELECT url 
+              FROM product_images 
+              WHERE product_id = p.product_id AND is_primary = TRUE 
+              LIMIT 1
+            ) AS primary_image,
+            CASE WHEN p.category_id = (SELECT category_id FROM product_info) THEN 3 ELSE 0 END +
+            (
+              SELECT COUNT(*) 
+              FROM product_tags pt 
+              WHERE pt.product_id = p.product_id 
+                AND pt.tag_id = ANY((SELECT tag_ids FROM product_info))
+            ) * 2 +
+            (
+              SELECT COUNT(*) 
+              FROM product_attributes pa 
+              WHERE pa.product_id = p.product_id 
+                AND pa.name = ANY((SELECT attribute_names FROM product_info))
+            ) AS relevance_score
+          FROM 
+            products p
+          WHERE 
+            p.product_id != $1
+            AND p.is_active = TRUE
+        )
+        SELECT * FROM related_score
+        WHERE relevance_score > 0
+        ORDER BY relevance_score DESC, name
+        LIMIT $2
+      `;
+      
+      const result = await db.query(query, [productId, limit]);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching related products', { error: error.message, productId });
+      throw new DatabaseError('Failed to fetch related products');
+    }
+  },
+  
+  /**
+   * Get trending products based on views, orders, and ratings
+   * @param {Object} options - Filter options and limits
+   * @returns {Promise<Array>} Trending products
+   */
+  getTrendingProducts: async ({ timeframe = '7 days', categoryId = null, limit = 10 }) => {
+    try {
+      const params = [timeframe];
+      let categoryFilter = '';
+      
+      if (categoryId) {
+        categoryFilter = 'AND p.category_id = $2';
+        params.push(categoryId);
+      }
+      
+      params.push(limit);
+      
+      const query = `
+        WITH recent_orders AS (
+          SELECT 
+            oi.product_id,
+            COUNT(*) AS order_count,
+            SUM(oi.quantity) AS total_quantity_ordered
+          FROM 
+            order_items oi
+          JOIN 
+            orders o ON oi.order_id = o.order_id
+          WHERE 
+            o.created_at >= NOW() - $1::INTERVAL
+            AND o.status NOT IN ('cancelled', 'refunded', 'failed')
+          GROUP BY 
+            oi.product_id
+        ),
+        recent_reviews AS (
+          SELECT 
+            product_id,
+            COUNT(*) AS review_count,
+            AVG(rating) AS avg_recent_rating
+          FROM 
+            product_reviews
+          WHERE 
+            created_at >= NOW() - $1::INTERVAL
+            AND status = 'approved'
+          GROUP BY 
+            product_id
+        ),
+        trending_score AS (
+          SELECT 
+            p.product_id,
+            p.name,
+            p.price,
+            p.brand,
+            c.name AS category_name,
+            (
+              SELECT url 
+              FROM product_images 
+              WHERE product_id = p.product_id AND is_primary = TRUE 
+              LIMIT 1
+            ) AS primary_image,
+            COALESCE(ro.order_count, 0) * 10 +
+            COALESCE(ro.total_quantity_ordered, 0) * 2 +
+            COALESCE(rr.review_count, 0) * 5 +
+            COALESCE(rr.avg_recent_rating, 0) * 3 AS trend_score
+          FROM 
+            products p
+          LEFT JOIN 
+            recent_orders ro ON p.product_id = ro.product_id
+          LEFT JOIN 
+            recent_reviews rr ON p.product_id = rr.product_id
+          LEFT JOIN
+            categories c ON p.category_id = c.category_id
+          WHERE 
+            p.is_active = TRUE
+            ${categoryFilter}
+        )
+        SELECT * FROM trending_score
+        WHERE trend_score > 0
+        ORDER BY trend_score DESC, name
+        LIMIT $${params.length}
+      `;
+      
+      const result = await db.query(query, params);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching trending products', { error: error.message });
+      throw new DatabaseError('Failed to fetch trending products');
+    }
+  },
+  
+  /**
+   * Get low stock products for inventory management
+   * @returns {Promise<Array>} Low stock products
+   */
+  getLowStockProducts: async () => {
+    try {
+      const query = `
+        SELECT 
+          p.product_id,
+          p.name,
+          p.sku,
+          p.price,
+          p.brand,
+          i.quantity,
+          i.reserved_quantity,
+          i.low_stock_threshold,
+          (i.quantity - i.reserved_quantity) AS available_quantity,
+          c.name AS category_name,
+          (
+            SELECT COUNT(*) 
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE oi.product_id = p.product_id
+            AND o.created_at >= NOW() - INTERVAL '30 days'
+          ) AS monthly_sales,
+          CASE
+            WHEN i.quantity <= 0 THEN 'out_of_stock'
+            WHEN i.quantity <= i.low_stock_threshold THEN 'low_stock'
+            ELSE 'normal'
+          END AS stock_status
+        FROM 
+          products p
+        JOIN 
+          inventory i ON p.product_id = i.product_id
+        LEFT JOIN
+          categories c ON p.category_id = c.category_id
+        WHERE 
+          p.is_active = TRUE
+          AND p.is_physical = TRUE
+          AND i.quantity <= i.low_stock_threshold
+        ORDER BY 
+          (i.quantity - i.reserved_quantity) ASC,
+          monthly_sales DESC
+      `;
+      
+      const result = await db.query(query);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching low stock products', { error: error.message });
+      throw new DatabaseError('Failed to fetch low stock products');
+    }
+  },
+  
+  /**
+   * Get products with best profit margins
+   * @returns {Promise<Array>} Products with profit margin data
+   */
+  getProductProfitMargins: async ({ minMargin = 0, limit = 20 }) => {
+    try {
+      const query = `
+        SELECT 
+          p.product_id,
+          p.name,
+          p.sku,
+          p.price,
+          p.cost_price,
+          p.brand,
+          c.name AS category_name,
+          (p.price - COALESCE(p.cost_price, 0)) AS profit_amount,
+          CASE 
+            WHEN COALESCE(p.cost_price, 0) > 0 
+            THEN ROUND(((p.price - p.cost_price) / p.cost_price * 100)::numeric, 2)
+            ELSE 100
+          END AS profit_margin_percentage,
+          (
+            SELECT COUNT(*) 
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE oi.product_id = p.product_id
+            AND o.created_at >= NOW() - INTERVAL '30 days'
+          ) AS monthly_sales,
+          (
+            SELECT SUM((oi.unit_price - COALESCE(p.cost_price, 0)) * oi.quantity)
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE oi.product_id = p.product_id
+            AND o.created_at >= NOW() - INTERVAL '30 days'
+          ) AS monthly_profit
+        FROM 
+          products p
+        LEFT JOIN
+          categories c ON p.category_id = c.category_id
+        WHERE 
+          p.is_active = TRUE
+          AND CASE 
+            WHEN COALESCE(p.cost_price, 0) > 0 
+            THEN ((p.price - p.cost_price) / p.cost_price * 100) >= $1
+            ELSE TRUE
+          END
+        ORDER BY 
+          profit_margin_percentage DESC,
+          monthly_profit DESC NULLS LAST
+        LIMIT $2
+      `;
+      
+      const result = await db.query(query, [minMargin, limit]);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching product profit margins', { error: error.message });
+      throw new DatabaseError('Failed to fetch product profit margins');
+    }
+  }
+};
+
+module.exports = productQueries;

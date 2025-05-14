@@ -1,118 +1,115 @@
- // server/src/server.js
-require('dotenv').config();
+/**
+ * Main server entry point
+ */
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const morgan = require('morgan');
-const { pool } = require('./config/db');
-const { errorHandler } = require('./middleware/errorHandler');
-const userRoutes = require('./routes/userRoutes');
-const productRoutes = require('./routes/productRoutes');
-const orderRoutes = require('./routes/orderRoutes');
-const analyticsRoutes = require('./routes/analyticsRoutes');
+const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
+const path = require('path');
+require('dotenv').config();
 
+// Import custom modules
+const logger = require('./ecommerce/utils/logger');
+const routes = require('./ecommerce/routes');
+const errorHandler = require('./ecommerce/middleware/errorHandler');
+const rateLimiter = require('./ecommerce/middleware/rateLimiter');
+const db = require('./ecommerce/config/db');
+
+// Create Express app
 const app = express();
 
-// =====================
-// Database Connection Check
-// =====================
-const checkDatabaseConnection = async () => {
-  try {
-    const client = await pool.connect();
-    console.log('✅ Database connected successfully');
-    client.release();
-  } catch (error) {
-    console.error('❌ Database connection error:', error.message);
-    process.exit(1);
-  }
-};
+// Set up request ID middleware
+app.use((req, res, next) => {
+  req.id = uuidv4();
+  next();
+});
 
-// =====================
-// Middleware
-// =====================
+// Set up secure headers
 app.use(helmet());
+
+// Enable CORS
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Api-Key']
 }));
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true }));
 
-// Logging
-if (process.env.NODE_ENV !== 'production') {
-  app.use(morgan('dev'));
+// Compression middleware
+app.use(compression());
+
+// Request logging
+if (process.env.NODE_ENV === 'production') {
+  // Create a write stream for access logs
+  const accessLogStream = fs.createWriteStream(
+    path.join(__dirname, '../logs/access.log'),
+    { flags: 'a' }
+  );
+  
+  // Set up morgan logging to file and console
+  app.use(morgan('combined', { stream: accessLogStream }));
 } else {
-  app.use(morgan('combined', {
-    skip: (req, res) => res.statusCode < 400
-  }));
+  // Development logging
+  app.use(morgan('dev'));
 }
 
-// =====================
-// Rate Limiting
-// =====================
-const rateLimit = require('express-rate-limit');
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs
-  message: 'Too many requests from this IP, please try again later'
+// Parse JSON request bodies
+app.use(express.json({ limit: '1mb' }));
+
+// Parse URL-encoded request bodies
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Apply global rate limiter
+app.use(rateLimiter({
+  maxRequests: 300,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'global'
+}));
+
+// Test database connection
+db.query('SELECT NOW()')
+  .then(() => logger.info('Database connection successful'))
+  .catch((err) => logger.error('Database connection failed', { error: err.message }));
+
+// Mount API routes
+app.use('/api', routes);
+
+// Handle 404 errors
+app.use((req, res, next) => {
+  const error = new Error(`Not Found - ${req.originalUrl}`);
+  error.statusCode = 404;
+  next(error);
 });
-app.use(limiter);
 
-// =====================
-// Routes
-// =====================
-app.use('/api/v1/users', userRoutes);
-app.use('/api/v1/products', productRoutes);
-app.use('/api/v1/orders', orderRoutes);
-app.use('/api/v1/analytics', analyticsRoutes);
-
-// Health Check Endpoint
-app.get('/api/v1/health', (req, res) => {
-  res.status(200).json({
-    status: 'success',
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
-
-// =====================
-// Error Handling
-// =====================
+// Global error handler
 app.use(errorHandler);
 
-// Handle 404 routes
-app.all('*', (req, res) => {
-  res.status(404).json({
-    status: 'fail',
-    message: `Can't find ${req.originalUrl} on this server!`
+// Start server
+const PORT = process.env.PORT || 3000;
+const server = app.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT}`);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err) => {
+  logger.error('Unhandled Rejection', { error: err.message, stack: err.stack });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception', { error: err.message, stack: err.stack });
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    logger.info('Process terminated');
+    db.end();
   });
 });
 
-// =====================
-// Server Initialization
-// =====================
-const PORT = process.env.PORT || 5000;
-
-const startServer = async () => {
-  await checkDatabaseConnection();
-  
-  const server = app.listen(PORT, () => {
-    console.log(`🚀 Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
-  });
-
-  // Handle unhandled promise rejections
-  process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err.message);
-    server.close(() => process.exit(1));
-  });
-
-  // Handle uncaught exceptions
-  process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err.message);
-    server.close(() => process.exit(1));
-  });
-};
-
-startServer();
+module.exports = server;
