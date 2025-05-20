@@ -12,12 +12,24 @@ CREATE TABLE users (
     first_name VARCHAR(50),
     last_name VARCHAR(50),
     phone VARCHAR(20),
+    email_verified BOOLEAN DEFAULT FALSE,
     address JSONB,  -- Structured address data
     role VARCHAR(20) CHECK (role IN ('customer', 'admin', 'seller')) DEFAULT 'customer',
     account_status VARCHAR(20) CHECK (account_status IN ('active', 'suspended', 'banned')) DEFAULT 'active',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMP WITH TIME ZONE
+);
+
+CREATE TABLE user_tokens (
+  token_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  token VARCHAR(255) NOT NULL UNIQUE,
+  type VARCHAR(50) NOT NULL CHECK (type IN ('email_verification', 'password_reset', 'api_token')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  used BOOLEAN DEFAULT FALSE,
+  used_at TIMESTAMP WITH TIME ZONE
 );
 
 -- 2. Categories Table

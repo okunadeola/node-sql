@@ -2,7 +2,7 @@
 const db = require('../../config/db');
 const SqlBuilder = require('../../utils/sqlBuilder');
 const logger = require('../../utils/logger');
-const { NotFoundError, DatabaseError } = require('../../utils/error');
+const { NotFoundError, DatabaseError, ValidationError } = require('../../utils/error');
 
 /**
  * Product Queries
@@ -943,8 +943,1451 @@ const productQueries = {
       JOIN products p ON pc.product_id = p.product_id
       WHERE pc.previous_price IS NOT NULL
       ORDER BY price_difference DESC;`;
-  }
+  },
+
+    /**
+   * Get all products with filters and pagination
+   * @param {Object} filters - Filter conditions
+   * @param {Object} options - Pagination and sorting options
+   * @returns {Promise<Object>} Products with pagination info
+   */
+  getAllProducts: async (filters = {}, options = {}) => {
+    try {
+      // Set default options
+      const defaultOptions = {
+        page: 1,
+        limit: 20,
+        sort: 'created_at DESC'
+      };
+      
+      const queryOptions = { ...defaultOptions, ...options };
+      
+      // Build the select query
+      const { query: selectQuery, params: selectParams, pagination } = 
+        SqlBuilder.buildSelectQuery(
+          'products',
+          [
+            'p.product_id',
+            'p.name',
+            'p.description',
+            'p.price',
+            'p.compare_price',
+            'p.sku',
+            'p.brand',
+            'p.is_active',
+            'p.is_featured',
+            'p.created_at',
+            'p.updated_at',
+            'c.name AS category_name',
+            'c.category_id',
+            'i.quantity AS stock_quantity'
+          ],
+          filters,
+          {
+            pagination: {
+              page: queryOptions.page,
+              limit: queryOptions.limit
+            },
+            sort: queryOptions.sort
+          }
+        );
+
+      // Add table aliases and joins
+      const finalSelectQuery = selectQuery
+        .replace('FROM products', 'FROM products p')
+        .replace('WHERE', `
+          LEFT JOIN categories c ON p.category_id = c.category_id
+          LEFT JOIN inventory i ON p.product_id = i.product_id
+          WHERE`);
+
+      // Get products
+      const productsResult = await db.query(finalSelectQuery, selectParams);
+      
+      // Get total count for pagination
+      const { query: countQuery, params: countParams } = SqlBuilder.buildCountQuery('products', filters);
+      const countResult = await db.query(countQuery, countParams);
+      
+      const total = parseInt(countResult.rows[0].total, 10);
+      const totalPages = Math.ceil(total / queryOptions.limit);
+      
+      // Get primary images for each product
+      if (productsResult.rows.length > 0) {
+        const productIds = productsResult.rows.map(p => p.product_id);
+        const { inClause, params: imageParams } = SqlBuilder.generateInClause(productIds);
+        
+        const imagesQuery = `
+          SELECT product_id, url 
+          FROM product_images 
+          WHERE product_id IN ${inClause} AND is_primary = TRUE
+        `;
+        
+        const imagesResult = await db.query(imagesQuery, imageParams);
+        
+        // Map images to products
+        const imageMap = imagesResult.rows.reduce((acc, img) => {
+          acc[img.product_id] = img.url;
+          return acc;
+        }, {});
+        
+        // Add image URLs to products
+        productsResult.rows.forEach(product => {
+          product.primary_image = imageMap[product.product_id] || null;
+        });
+      }
+      
+      return {
+        products: productsResult.rows,
+        pagination: {
+          total,
+          totalPages,
+          currentPage: queryOptions.page,
+          limit: queryOptions.limit
+        }
+      };
+    } catch (error) {
+      logger.error('Error getting all products', { error: error.message });
+      throw new DatabaseError('Failed to retrieve products');
+    }
+  },
+
+  /**
+   * Get a product by ID with all related data
+   * @param {string} productId - Product UUID
+   * @returns {Promise<Object>} Product with related data
+   */
+  getProductById2: async (productId) => {
+    try {
+      // Get basic product info
+      const productQuery = `
+        SELECT 
+          p.*,
+          c.name AS category_name,
+          c.category_id,
+          i.quantity AS stock_quantity,
+          i.reserved_quantity,
+          COALESCE(AVG(pr.rating), 0) AS average_rating,
+          COUNT(pr.review_id) AS review_count
+        FROM 
+          products p
+        LEFT JOIN 
+          categories c ON p.category_id = c.category_id
+        LEFT JOIN 
+          inventory i ON p.product_id = i.product_id
+        LEFT JOIN 
+          product_reviews pr ON p.product_id = pr.product_id AND pr.status = 'approved'
+        WHERE 
+          p.product_id = $1
+        GROUP BY 
+          p.product_id, c.name, c.category_id, i.quantity, i.reserved_quantity
+      `;
+      
+      const productResult = await db.query(productQuery, [productId]);
+      
+      if (productResult.rows.length === 0) {
+        throw new NotFoundError(`Product with ID ${productId} not found`);
+      }
+      
+      const product = productResult.rows[0];
+      
+      // Get product images
+      const imagesQuery = `
+        SELECT image_id, url, alt_text, is_primary, display_order
+        FROM product_images
+        WHERE product_id = $1
+        ORDER BY is_primary DESC, display_order ASC
+      `;
+      
+      const imagesResult = await db.query(imagesQuery, [productId]);
+      product.images = imagesResult.rows;
+      
+      // Get product attributes
+      const attributesQuery = `
+        SELECT attribute_id, name, value
+        FROM product_attributes
+        WHERE product_id = $1
+      `;
+      
+      const attributesResult = await db.query(attributesQuery, [productId]);
+      product.attributes = attributesResult.rows;
+      
+      // Get related products from same category
+      const relatedQuery = `
+        SELECT 
+          p.product_id, 
+          p.name, 
+          p.price,
+          (SELECT url FROM product_images WHERE product_id = p.product_id AND is_primary = TRUE LIMIT 1) AS primary_image
+        FROM 
+          products p
+        WHERE 
+          p.category_id = $1
+          AND p.product_id != $2
+          AND p.is_active = TRUE
+        LIMIT 5
+      `;
+      
+      const relatedResult = await db.query(relatedQuery, [product.category_id, productId]);
+      product.related_products = relatedResult.rows;
+      
+      return product;
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      logger.error('Error getting product by ID', { error: error.message, productId });
+      throw new DatabaseError(`Failed to retrieve product with ID ${productId}`);
+    }
+  },
+
+  /**
+   * Create a new product
+   * @param {Object} productData - Product data
+   * @returns {Promise<Object>} Created product
+   */
+  createProduct2: async (productData) => {
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Create product
+      const { query, values } = SqlBuilder.buildInsertQuery('products', productData);
+      const result = await client.query(query, values);
+      const product = result.rows[0];
+      
+      // Create initial inventory record if this is a physical product
+      if (productData.is_physical) {
+        const inventoryData = {
+          product_id: product.product_id,
+          quantity: productData.initial_quantity || 0,
+          reserved_quantity: 0,
+          low_stock_threshold: productData.low_stock_threshold || 5
+        };
+        
+        const { query: invQuery, values: invValues } = SqlBuilder.buildInsertQuery('inventory', inventoryData);
+        await client.query(invQuery, invValues);
+      }
+      
+      await client.query('COMMIT');
+      return product;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Error creating product', { error: error.message });
+      throw new DatabaseError('Failed to create product: ' + error.message);
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Update a product
+   * @param {string} productId - Product UUID
+   * @param {Object} productData - Updated product data
+   * @returns {Promise<Object>} Updated product
+   */
+  updateProduct: async (productId, productData) => {
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Update the product
+      const { query, values } = SqlBuilder.buildUpdateQuery(
+        'products',
+        { ...productData, updated_at: 'NOW()' },
+        { product_id: productId }
+      );
+      
+      const result = await client.query(query, values);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundError(`Product with ID ${productId} not found`);
+      }
+      
+      // Update inventory if quantity is provided
+      if (productData.hasOwnProperty('quantity')) {
+        const updateInventoryQuery = `
+          INSERT INTO inventory (product_id, quantity, low_stock_threshold)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (product_id) 
+          DO UPDATE SET 
+            quantity = $2, 
+            low_stock_threshold = $3,
+            updated_at = NOW()
+        `;
+        
+        await client.query(
+          updateInventoryQuery, 
+          [productId, productData.quantity, productData.low_stock_threshold || 5]
+        );
+      }
+      
+      await client.query('COMMIT');
+      return result.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      logger.error('Error updating product', { error: error.message, productId });
+      throw new DatabaseError(`Failed to update product with ID ${productId}`);
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Delete a product
+   * @param {string} productId - Product UUID
+   * @returns {Promise<boolean>} Success indicator
+   */
+  deleteProduct: async (productId) => {
+    try {
+      const query = `
+        DELETE FROM products
+        WHERE product_id = $1
+        RETURNING product_id
+      `;
+      
+      const result = await db.query(query, [productId]);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundError(`Product with ID ${productId} not found`);
+      }
+      
+      return true;
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      logger.error('Error deleting product', { error: error.message, productId });
+      throw new DatabaseError(`Failed to delete product with ID ${productId}`);
+    }
+  },
+
+
+
+  /**
+   * Get products that are low in stock
+   * @returns {Promise<Array>} Low stock products
+   */
+  getLowStockProducts2: async () => {
+    try {
+      const query = `
+        SELECT 
+          p.product_id,
+          p.name,
+          p.sku,
+          i.quantity,
+          i.low_stock_threshold,
+          i.reserved_quantity,
+          (SELECT url FROM product_images WHERE product_id = p.product_id AND is_primary = TRUE LIMIT 1) AS primary_image
+        FROM 
+          products p
+        JOIN 
+          inventory i ON p.product_id = i.product_id
+        WHERE 
+          i.quantity <= i.low_stock_threshold
+          AND p.is_active = TRUE
+        ORDER BY 
+          (i.quantity / NULLIF(i.low_stock_threshold, 0)) ASC
+      `;
+      
+      const result = await db.query(query);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error getting low stock products', { error: error.message });
+      throw new DatabaseError('Failed to retrieve low stock products');
+    }
+  },
+
+  /**
+   * Get trending products based on views, orders, and ratings
+   * @param {Object} options - Filter options and limits
+   * @returns {Promise<Array>} Trending products
+   */
+  getTrendingProducts2: async ({ timeframe = '7 days', categoryId = null, limit = 10 }) => {
+    try {
+      const params = [timeframe];
+      let categoryFilter = '';
+      
+      if (categoryId) {
+        categoryFilter = 'AND p.category_id = $2';
+        params.push(categoryId);
+      }
+      
+      params.push(limit);
+      
+      const query = `
+        WITH recent_orders AS (
+          SELECT 
+            oi.product_id,
+            COUNT(*) AS order_count,
+            SUM(oi.quantity) AS total_quantity_ordered
+          FROM 
+            order_items oi
+          JOIN 
+            orders o ON oi.order_id = o.order_id
+          WHERE 
+            o.created_at >= NOW() - $1::INTERVAL
+            AND o.status NOT IN ('cancelled', 'refunded', 'failed')
+          GROUP BY 
+            oi.product_id
+        ),
+        recent_reviews AS (
+          SELECT 
+            product_id,
+            COUNT(*) AS review_count,
+            AVG(rating) AS avg_recent_rating
+          FROM 
+            product_reviews
+          WHERE 
+            created_at >= NOW() - $1::INTERVAL
+            AND status = 'approved'
+          GROUP BY 
+            product_id
+        ),
+        trending_score AS (
+          SELECT 
+            p.product_id,
+            p.name,
+            p.price,
+            p.brand,
+            c.name AS category_name,
+            (
+              SELECT url 
+              FROM product_images 
+              WHERE product_id = p.product_id AND is_primary = TRUE 
+              LIMIT 1
+            ) AS primary_image,
+            COALESCE(ro.order_count, 0) * 10 +
+            COALESCE(ro.total_quantity_ordered, 0) * 2 +
+            COALESCE(rr.review_count, 0) * 5 +
+            COALESCE(rr.avg_recent_rating, 0) * 3 AS trend_score
+          FROM 
+            products p
+          LEFT JOIN 
+            recent_orders ro ON p.product_id = ro.product_id
+          LEFT JOIN 
+            recent_reviews rr ON p.product_id = rr.product_id
+          LEFT JOIN
+            categories c ON p.category_id = c.category_id
+          WHERE 
+            p.is_active = TRUE
+            ${categoryFilter}
+        )
+        SELECT * FROM trending_score
+        WHERE trend_score > 0
+        ORDER BY trend_score DESC, name
+        LIMIT $${params.length}
+      `;
+      
+      const result = await db.query(query, params);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching trending products', { error: error.message });
+      throw new DatabaseError('Failed to fetch trending products');
+    }
+  },
+
+  /**
+   * Get featured products
+   * @param {number} limit - Maximum number of products to return
+   * @returns {Promise<Array>} Featured products
+   */
+  getFeaturedProducts: async (limit = 8) => {
+    try {
+      const query = `
+        SELECT 
+          p.product_id,
+          p.name,
+          p.description,
+          p.price,
+          p.compare_price,
+          c.name AS category_name,
+          (
+            SELECT url 
+            FROM product_images 
+            WHERE product_id = p.product_id AND is_primary = TRUE 
+            LIMIT 1
+          ) AS primary_image
+        FROM 
+          products p
+        LEFT JOIN 
+          categories c ON p.category_id = c.category_id
+        WHERE 
+          p.is_featured = TRUE
+          AND p.is_active = TRUE
+        ORDER BY 
+          p.updated_at DESC
+        LIMIT $1
+      `;
+      
+      const result = await db.query(query, [limit]);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching featured products', { error: error.message });
+      throw new DatabaseError('Failed to fetch featured products');
+    }
+  },
+
+  /**
+   * Add product images
+   * @param {string} productId - Product UUID
+   * @param {Array} images - Array of image objects
+   * @returns {Promise<Array>} Created images
+   */
+  addProductImages: async (productId, images) => {
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Check if product exists
+      const productCheck = await client.query('SELECT product_id FROM products WHERE product_id = $1', [productId]);
+      
+      if (productCheck.rows.length === 0) {
+        throw new NotFoundError(`Product with ID ${productId} not found`);
+      }
+      
+      const createdImages = [];
+      
+      // If there's a primary image, update existing primary images
+      if (images.some(img => img.is_primary)) {
+        await client.query(
+          'UPDATE product_images SET is_primary = FALSE WHERE product_id = $1',
+          [productId]
+        );
+      }
+      
+      // Insert each image
+      for (const image of images) {
+        const { query, values } = SqlBuilder.buildInsertQuery('product_images', {
+          product_id: productId,
+          url: image.url,
+          alt_text: image.alt_text || '',
+          is_primary: image.is_primary || false,
+          display_order: image.display_order || 0
+        });
+        
+        const result = await client.query(query, values);
+        createdImages.push(result.rows[0]);
+      }
+      
+      await client.query('COMMIT');
+      return createdImages;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      logger.error('Error adding product images', { error: error.message, productId });
+      throw new DatabaseError(`Failed to add images to product ${productId}`);
+    } finally {
+      client.release();
+    }
+  },
+
+    /**
+   * Get images for a specific product
+   * @param {string} imageId - Image ID
+   * @returns {Promise<Array>} Product images
+   */
+  getProductImageById: async (productId) => {
+    try {
+      const query = `
+        SELECT 
+          ip.image_id,
+          ip.url,
+          ip.alt_text,
+          ip.is_primary,
+          ip.display_order,
+          ip.created_at,
+          p.product_id
+        FROM 
+          product_images  ip
+        JOIN products p
+        ON ip.product_id = p.product_id
+        WHERE 
+          image_id = $1
+        ORDER BY 
+          is_primary DESC,
+          display_order ASC,
+          created_at ASC
+      `;
+      
+      const result = await db.query(query, [imageId]);
+      return result.rows[0];
+    } catch (error) {
+      logger.error('Error fetching product images', { 
+        error: error.message, 
+        productId 
+      });
+      throw new DatabaseError('Failed to fetch product images');
+    }
+  },
+
+
+    /**
+   * Get images for a specific product
+   * @param {string} productId - Product ID
+   * @returns {Promise<Array>} Product images
+   */
+  getProductImages: async (productId) => {
+    try {
+      const query = `
+        SELECT 
+          image_id,
+          url,
+          alt_text,
+          is_primary,
+          display_order,
+          created_at
+        FROM 
+          product_images
+        WHERE 
+          product_id = $1
+        ORDER BY 
+          is_primary DESC,
+          display_order ASC,
+          created_at ASC
+      `;
+      
+      const result = await db.query(query, [productId]);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching product images', { 
+        error: error.message, 
+        productId 
+      });
+      throw new DatabaseError('Failed to fetch product images');
+    }
+  },
+
+
+  /**
+   * Delete a product image
+   * @param {string} imageId - Image UUID
+   * @returns {Promise<boolean>} Success indicator
+   */
+  deleteProductImage: async (imageId) => {
+    try {
+      const query = `
+        DELETE FROM product_images
+        WHERE image_id = $1
+        RETURNING image_id
+      `;
+      
+      const result = await db.query(query, [imageId]);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundError(`Image with ID ${imageId} not found`);
+      }
+      
+      return true;
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      logger.error('Error deleting product image', { error: error.message, imageId });
+      throw new DatabaseError(`Failed to delete image with ID ${imageId}`);
+    }
+  },
+
+
+    /**
+   * Set primary image for a product
+   * @param {UUID} productId - Product ID
+   * @param {UUID} imageId - Image ID to set as primary
+   * @returns {Promise<Object>} Updated image information
+   */
+  setPrimaryImage: async (productId, imageId) => {
+    try {
+      // Begin transaction
+      await db.query('BEGIN');
+      
+      // First, check if the image exists and belongs to the product
+      const checkQuery = `
+        SELECT image_id FROM product_images
+        WHERE image_id = $1 AND product_id = $2
+      `;
+      
+      const checkResult = await db.query(checkQuery, [imageId, productId]);
+      
+      if (checkResult.rows.length === 0) {
+        await db.query('ROLLBACK');
+        throw new NotFoundError(`Image not found or doesn't belong to the product`);
+      }
+      
+      // Remove primary flag from all images of this product
+      const resetQuery = `
+        UPDATE product_images
+        SET is_primary = FALSE
+        WHERE product_id = $1
+      `;
+      
+      await db.query(resetQuery, [productId]);
+      
+      // Set the selected image as primary
+      const updateQuery = `
+        UPDATE product_images
+        SET is_primary = TRUE
+        WHERE image_id = $1
+        RETURNING *
+      `;
+      
+      const result = await db.query(updateQuery, [imageId]);
+      
+      // Commit transaction
+      await db.query('COMMIT');
+      
+      return result.rows[0];
+    } catch (error) {
+      // Rollback transaction on error
+      await db.query('ROLLBACK');
+      
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      logger.error('Error setting primary product image', { error: error.message, productId, imageId });
+      throw new DatabaseError('Failed to set primary product image');
+    }
+  }  ,
+
+    /**
+   * Get attributes for a specific product
+   * @param {string} productId - Product ID
+   * @returns {Promise<Array>} Product attributes
+   */
+  getProductAttributes: async (productId) => {
+    try {
+      const query = `
+        SELECT 
+          attribute_id,
+          name,
+          value,
+          created_at
+        FROM 
+          product_attributes
+        WHERE 
+          product_id = $1
+        ORDER BY 
+          name ASC
+      `;
+      
+      const result = await db.query(query, [productId]);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching product attributes', { 
+        error: error.message, 
+        productId 
+      });
+      throw new DatabaseError('Failed to fetch product attributes');
+    }
+  },
+
+  /**
+   * Get products by category ID
+   * @param {UUID} categoryId - The category ID
+   * @param {Object} options - Filter and pagination options
+   * @returns {Promise<Object>} Products and pagination info
+   */
+  getProductsByCategory: async (categoryId, options = {}) => {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        sort = 'created_at DESC',
+        includeInactive = false,
+        priceMin,
+        priceMax,
+        brand,
+        search
+      } = options;
+      
+      // Build filters
+      const filters = { category_id: categoryId };
+      if (!includeInactive) {
+        filters.is_active = true;
+      }
+      
+      // Add price range filter if provided
+      const additionalWhereConditions = [];
+      const additionalParams = [];
+      let paramCounter = 1;
+      
+      if (priceMin !== undefined && priceMin !== null) {
+        additionalWhereConditions.push(`price >= $${paramCounter++}`);
+        additionalParams.push(parseFloat(priceMin));
+      }
+      
+      if (priceMax !== undefined && priceMax !== null) {
+        additionalWhereConditions.push(`price <= $${paramCounter++}`);
+        additionalParams.push(parseFloat(priceMax));
+      }
+      
+      if (brand) {
+        additionalWhereConditions.push(`brand = $${paramCounter++}`);
+        additionalParams.push(brand);
+      }
+      
+      if (search) {
+        additionalWhereConditions.push(`(name ILIKE $${paramCounter} OR description ILIKE $${paramCounter})`);
+        additionalParams.push(`%${search}%`);
+        paramCounter++;
+      }
+      
+      // Build pagination
+      const offset = (page - 1) * limit;
+      
+      // Build full query
+      const { whereClause, params } = SqlBuilder.buildWhereClause(filters);
+      
+      const whereConditions = whereClause ? 
+        whereClause + (additionalWhereConditions.length > 0 ? ` AND ${additionalWhereConditions.join(' AND ')}` : '') :
+        (additionalWhereConditions.length > 0 ? `WHERE ${additionalWhereConditions.join(' AND ')}` : '');
+      
+      const query = `
+        SELECT 
+          p.product_id,
+          p.name,
+          p.description,
+          p.price,
+          p.compare_price,
+          p.brand,
+          p.is_featured,
+          p.is_active,
+          p.created_at,
+          c.name AS category_name,
+          (
+            SELECT json_build_object(
+              'image_id', pi.image_id,
+              'url', pi.url,
+              'is_primary', pi.is_primary
+            )
+            FROM product_images pi
+            WHERE pi.product_id = p.product_id AND pi.is_primary = TRUE
+            LIMIT 1
+          ) AS primary_image,
+          (
+            SELECT COALESCE(AVG(pr.rating), 0)
+            FROM product_reviews pr
+            WHERE pr.product_id = p.product_id AND pr.status = 'approved'
+          ) AS avg_rating,
+          (
+            SELECT COUNT(*)
+            FROM product_reviews pr
+            WHERE pr.product_id = p.product_id AND pr.status = 'approved'
+          ) AS review_count,
+          (
+            SELECT json_build_object(
+              'quantity', i.quantity,
+              'reserved_quantity', i.reserved_quantity
+            )
+            FROM inventory i
+            WHERE i.product_id = p.product_id
+          ) AS inventory
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.category_id
+        ${whereConditions}
+        ORDER BY ${SqlBuilder.buildOrderByClause(sort, 'p.created_at DESC').replace('ORDER BY ', '')}
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      
+      // Count query for pagination
+      const countQuery = `
+        SELECT COUNT(*) AS total
+        FROM products p
+        ${whereConditions}
+      `;
+      
+      // Execute both queries
+      const [productsResult, countResult] = await Promise.all([
+        db.query(query, [...params, ...additionalParams]),
+        db.query(countQuery, [...params, ...additionalParams])
+      ]);
+      
+      const totalProducts = parseInt(countResult.rows[0].total);
+      const totalPages = Math.ceil(totalProducts / limit);
+      
+      return {
+        products: productsResult.rows,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          totalProducts,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
+        }
+      };
+    } catch (error) {
+      logger.error('Error fetching products by category', { error: error.message, categoryId });
+      throw new DatabaseError('Failed to fetch products by category');
+    }
+  },
+  
+  /**
+   * Get product inventory
+   * @param {UUID} productId - Product ID
+   * @returns {Promise<Object>} Inventory information
+   */
+  getProductInventory: async (productId) => {
+    try {
+      const query = `
+        SELECT
+          inventory_id,
+          product_id,
+          quantity,
+          reserved_quantity,
+          warehouse_location,
+          low_stock_threshold,
+          last_restock_date,
+          next_restock_date,
+          created_at,
+          updated_at
+        FROM inventory
+        WHERE product_id = $1
+      `;
+      
+      const result = await db.query(query, [productId]);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundError(`Inventory not found for product ID: ${productId}`);
+      }
+      
+      return result.rows[0];
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      logger.error('Error fetching product inventory', { error: error.message, productId });
+      throw new DatabaseError('Failed to fetch product inventory');
+    }
+  },
+
+    /**
+   * Update product inventory
+   * @param {string} productId - Product UUID
+   * @param {number} quantity - New quantity
+   * @param {number} [lowStockThreshold] - New low stock threshold
+   * @returns {Promise<Object>} Updated inventory
+   */
+  updateInventory: async (productId, quantity, lowStockThreshold) => {
+    try {
+      // Check if product exists
+      const productCheck = await db.query('SELECT product_id FROM products WHERE product_id = $1', [productId]);
+      
+      if (productCheck.rows.length === 0) {
+        throw new NotFoundError(`Product with ID ${productId} not found`);
+      }
+      
+      const query = `
+        INSERT INTO inventory (product_id, quantity, low_stock_threshold)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (product_id) 
+        DO UPDATE SET 
+          quantity = $2, 
+          low_stock_threshold = COALESCE($3, inventory.low_stock_threshold),
+          updated_at = NOW()
+        RETURNING *
+      `;
+      
+      const result = await db.query(query, [productId, quantity, lowStockThreshold]);
+      return result.rows[0];
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      logger.error('Error updating inventory', { error: error.message, productId });
+      throw new DatabaseError(`Failed to update inventory for product ${productId}`);
+    }
+  },
+
+    /**
+   * Get product reviews
+   * @param {string} reviewId - reviewId UUID
+   * @returns {Promise<boolean>} Reviews with pagination info
+   */
+  getReviewById: async ( reviewId) => {
+    try {
+      // Build reviews query
+      let params = [reviewId];      
+      
+      const reviewsQuery = `
+        SELECT *
+        FROM 
+          product_reviews pr
+        WHERE 
+          pr.review_id = $1 
+      `;
+      
+      const reviewsResult = await db.query(reviewsQuery, params);
+      return reviewsResult.rows?.length > 0;
+    } catch (error) {
+      logger.error('Error getting product reviews', { error: error.message, productId });
+      throw new DatabaseError(`Failed to retrieve reviews for product ${productId}`);
+    }
+  },
+
+
+
+    /**
+   * Get product reviews
+   * @param {string} userId - user UUID
+   * @param {string} productId - Product UUID
+   * @param {Object} options - Filter and pagination options
+   * @returns {Promise<boolean>} Reviews with pagination info
+   */
+  getProductUserReview: async ( userId, productId, options = {}) => {
+    try {
+
+      
+      // Build reviews query
+      let params = [userId, productId];      
+      
+      const reviewsQuery = `
+        SELECT 
+          pr.review_id,
+          pr.rating,
+          pr.title,
+          pr.content,
+          pr.created_at,
+          pr.is_verified_purchase,
+          u.username,
+          u.first_name,
+          u.last_name
+        FROM 
+          product_reviews pr
+        JOIN 
+          users u ON pr.user_id = u.user_id
+        WHERE 
+          pr.user_id = $1 
+          AND
+          pr.product_id = $2 
+      `;
+      
+      const reviewsResult = await db.query(reviewsQuery, params);
+      return reviewsResult.rows?.length > 0;
+    } catch (error) {
+      logger.error('Error getting product reviews', { error: error.message, productId });
+      throw new DatabaseError(`Failed to retrieve reviews for product ${productId}`);
+    }
+  },
+
+
+
+
+    /**
+   * Get product reviews
+   * @param {string} productId - Product UUID
+   * @param {Object} options - Filter and pagination options
+   * @returns {Promise<Object>} Reviews with pagination info
+   */
+  getProductReviews: async (productId, options = {}) => {
+    try {
+      const defaultOptions = {
+        page: 1,
+        limit: 10,
+        sort: 'created_at DESC',
+        status: 'approved'
+      };
+      
+      const queryOptions = { ...defaultOptions, ...options };
+      const offset = (queryOptions.page - 1) * queryOptions.limit;
+      
+      // Build reviews query
+      let params = [productId, queryOptions.limit, offset];
+      let statusFilter = '';
+      
+      if (queryOptions.status) {
+        statusFilter = 'AND pr.status = $4';
+        params.push(queryOptions.status);
+      }
+      
+      const reviewsQuery = `
+        SELECT 
+          pr.review_id,
+          pr.rating,
+          pr.title,
+          pr.content,
+          pr.created_at,
+          pr.is_verified_purchase,
+          u.username,
+          u.first_name,
+          u.last_name
+        FROM 
+          product_reviews pr
+        JOIN 
+          users u ON pr.user_id = u.user_id
+        WHERE 
+          pr.product_id = $1
+          ${statusFilter}
+        ORDER BY 
+          pr.created_at DESC
+        LIMIT $2 OFFSET $3
+      `;
+      
+      const reviewsResult = await db.query(reviewsQuery, params);
+      
+      // Get total count for pagination
+      const countParams = [productId];
+      let countStatusFilter = '';
+      
+      if (queryOptions.status) {
+        countStatusFilter = 'AND status = $2';
+        countParams.push(queryOptions.status);
+      }
+      
+      const countQuery = `
+        SELECT COUNT(*) AS total
+        FROM product_reviews
+        WHERE product_id = $1 ${countStatusFilter}
+      `;
+      
+      const countResult = await db.query(countQuery, countParams);
+      const total = parseInt(countResult.rows[0].total, 10);
+      const totalPages = Math.ceil(total / queryOptions.limit);
+      
+      return {
+        reviews: reviewsResult.rows,
+        pagination: {
+          total,
+          totalPages,
+          currentPage: queryOptions.page,
+          limit: queryOptions.limit
+        }
+      };
+    } catch (error) {
+      logger.error('Error getting product reviews', { error: error.message, productId });
+      throw new DatabaseError(`Failed to retrieve reviews for product ${productId}`);
+    }
+  },
+  
+  /**
+   * Update product inventory
+   * @param {UUID} productId - Product ID
+   * @param {Object} data - Inventory data to update
+   * @returns {Promise<Object>} Updated inventory
+   */
+  updateProductInventory: async (productId, data) => {
+    try {
+      // First check if inventory exists
+      const checkQuery = `SELECT inventory_id, quantity FROM inventory WHERE product_id = $1`;
+      const checkResult = await db.query(checkQuery, [productId]);
+      
+      if (checkResult.rows.length === 0) {
+        // Create new inventory if it doesn't exist
+        const createQuery = `
+          INSERT INTO inventory (
+            product_id,
+            quantity,
+            reserved_quantity,
+            warehouse_location,
+            low_stock_threshold
+          ) VALUES ($1, $2, $3, $4, $5)
+          RETURNING *
+        `;
+        
+        const createParams = [
+          productId,
+          data.quantity || 0,
+          data.reserved_quantity || 0,
+          data.warehouse_location || null,
+          data.low_stock_threshold || 5
+        ];
+        
+        const createResult = await db.query(createQuery, createParams);
+        return createResult.rows[0];
+      }
+      
+      // Update existing inventory
+      const updateColumns = [];
+      const updateParams = [productId];
+      let paramCounter = 2;
+      
+      // Dynamically build the update query based on provided fields
+      if (data.quantity !== undefined) {
+        updateColumns.push(`quantity = $${paramCounter++}`);
+        const initialQuantity = checkResult.rows[0].quantity;
+        const newQuantity = initialQuantity - data.quantity;
+        updateParams.push(newQuantity);
+      }
+      
+      if (data.reserved_quantity !== undefined) {
+        updateColumns.push(`reserved_quantity = $${paramCounter++}`);
+        updateParams.push(data.reserved_quantity);
+      }
+      
+      if (data.warehouse_location !== undefined) {
+        updateColumns.push(`warehouse_location = $${paramCounter++}`);
+        updateParams.push(data.warehouse_location);
+      }
+      
+      if (data.low_stock_threshold !== undefined) {
+        updateColumns.push(`low_stock_threshold = $${paramCounter++}`);
+        updateParams.push(data.low_stock_threshold);
+      }
+      
+      if (data.next_restock_date !== undefined) {
+        updateColumns.push(`next_restock_date = $${paramCounter++}`);
+        updateParams.push(data.next_restock_date);
+      }
+      
+      // Always update the updated_at timestamp
+      updateColumns.push(`updated_at = CURRENT_TIMESTAMP`);
+      
+      if (updateColumns.length === 0) {
+        // No fields to update
+        return await productQueries.getProductInventory(productId);
+      }
+      
+      const updateQuery = `
+        UPDATE inventory
+        SET ${updateColumns.join(', ')}
+        WHERE product_id = $1
+        RETURNING *
+      `;
+      
+      const result = await db.query(updateQuery, updateParams);
+      return result.rows[0];
+    } catch (error) {
+      logger.error('Error updating product inventory', { error: error.message, productId });
+      throw new DatabaseError('Failed to update product inventory');
+    }
+  },
+  
+  /**
+   * Add a product review
+   * @param {Object} reviewData - Review data
+   * @returns {Promise<Object>} Created review
+   */
+  addProductReview: async (reviewData) => {
+    try {
+      const { product_id, user_id, rating, title, content } = reviewData;
+      
+      // Check if the user has already reviewed this product
+      const checkQuery = `
+        SELECT review_id FROM product_reviews
+        WHERE product_id = $1 AND user_id = $2
+      `;
+      
+      const checkResult = await db.query(checkQuery, [product_id, user_id]);
+      
+      if (checkResult.rows.length > 0) {
+        throw new ValidationError('You have already reviewed this product');
+      }
+      
+      // Check if this is a verified purchase
+      const verifiedQuery = `
+        SELECT COUNT(*) as purchase_count
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.order_id
+        WHERE oi.product_id = $1 AND o.user_id = $2 AND o.status = 'completed'
+      `;
+      
+      const verifiedResult = await db.query(verifiedQuery, [product_id, user_id]);
+      const isVerifiedPurchase = parseInt(verifiedResult.rows[0].purchase_count) > 0;
+      
+      // Insert the review
+      const insertQuery = `
+        INSERT INTO product_reviews (
+          product_id,
+          user_id,
+          rating,
+          title,
+          content,
+          is_verified_purchase,
+          status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `;
+      
+      // Default status is 'pending' unless auto-approval is enabled for verified purchases
+      const status = isVerifiedPurchase ? 'approved' : 'pending';
+      
+      const insertParams = [
+        product_id,
+        user_id,
+        rating,
+        title || null,
+        content || null,
+        isVerifiedPurchase,
+        status
+      ];
+      
+      const result = await db.query(insertQuery, insertParams);
+      return result.rows[0];
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        throw error;
+      }
+      logger.error('Error adding product review', { error: error.message });
+      throw new DatabaseError('Failed to add product review');
+    }
+  },
+  
+  /**
+   * Update a product review
+   * @param {UUID} reviewId - Review ID
+   * @param {Object} reviewData - Review data to update
+   * @param {UUID} userId - User ID (for authorization)
+   * @returns {Promise<Object>} Updated review
+   */
+  updateProductReview: async (reviewId, reviewData, userId) => {
+    try {
+      // First check if the review exists and belongs to the user
+      const checkQuery = `
+        SELECT review_id, user_id FROM product_reviews
+        WHERE review_id = $1
+      `;
+      
+      const checkResult = await db.query(checkQuery, [reviewId]);
+      
+      if (checkResult.rows.length === 0) {
+        throw new NotFoundError(`Review not found with ID: ${reviewId}`);
+      }
+      
+      if (checkResult.rows[0].user_id !== userId) {
+        throw new ValidationError('You can only update your own reviews');
+      }
+      
+      const updateColumns = [];
+      const updateParams = [reviewId];
+      let paramCounter = 2;
+      
+      // Dynamically build the update query based on provided fields
+      if (reviewData.rating !== undefined) {
+        updateColumns.push(`rating = $${paramCounter++}`);
+        updateParams.push(reviewData.rating);
+      }
+      
+      if (reviewData.title !== undefined) {
+        updateColumns.push(`title = $${paramCounter++}`);
+        updateParams.push(reviewData.title);
+      }
+      
+      if (reviewData.content !== undefined) {
+        updateColumns.push(`content = $${paramCounter++}`);
+        updateParams.push(reviewData.content);
+      }
+      
+      // Reset status to pending if content was updated
+      if (reviewData.rating !== undefined || reviewData.title !== undefined || reviewData.content !== undefined) {
+        updateColumns.push(`status = 'pending'`);
+      }
+      
+      // Always update the updated_at timestamp
+      updateColumns.push(`updated_at = CURRENT_TIMESTAMP`);
+      
+      if (updateColumns.length === 0) {
+        // No fields to update
+        return checkResult.rows[0];
+      }
+      
+      const updateQuery = `
+        UPDATE product_reviews
+        SET ${updateColumns.join(', ')}
+        WHERE review_id = $1
+        RETURNING *
+      `;
+      
+      const result = await db.query(updateQuery, updateParams);
+      return result.rows[0];
+    } catch (error) {
+      if (error instanceof NotFoundError || error instanceof ValidationError) {
+        throw error;
+      }
+      logger.error('Error updating product review', { error: error.message, reviewId });
+      throw new DatabaseError('Failed to update product review');
+    }
+  },
+  
+  /**
+   * Delete a product review
+   * @param {UUID} reviewId - Review ID
+   * @param {UUID} userId - User ID (for authorization)
+   * @returns {Promise<Boolean>} Success status
+   */
+  deleteProductReview: async (reviewId, userId) => {
+    try {
+      // First check if the review exists and belongs to the user
+      const checkQuery = `
+        SELECT review_id, user_id FROM product_reviews
+        WHERE review_id = $1
+      `;
+      
+      const checkResult = await db.query(checkQuery, [reviewId]);
+      
+      if (checkResult.rows.length === 0) {
+        throw new NotFoundError(`Review not found with ID: ${reviewId}`);
+      }
+      
+      if (checkResult.rows[0].user_id !== userId) {
+        throw new ValidationError('You can only delete your own reviews');
+      }
+      
+      const deleteQuery = `
+        DELETE FROM product_reviews
+        WHERE review_id = $1
+      `;
+      
+      await db.query(deleteQuery, [reviewId]);
+      return true;
+    } catch (error) {
+      if (error instanceof NotFoundError || error instanceof ValidationError) {
+        throw error;
+      }
+      logger.error('Error deleting product review', { error: error.message, reviewId });
+      throw new DatabaseError('Failed to delete product review');
+    }
+  },
+
+
+   /**
+   * Check if a user has purchased a specific product
+   * @param {string} userId - User ID
+   * @param {string} productId - Product ID
+   * @returns {Promise<boolean>} Whether the user has purchased the product
+   */
+  hasUserPurchasedProduct: async (userId, productId) => {
+    try {
+      const query = `
+        SELECT EXISTS(
+          SELECT 1
+          FROM orders o
+          JOIN order_items oi ON o.order_id = oi.order_id
+          WHERE o.user_id = $1
+            AND oi.product_id = $2
+            AND o.status IN ('completed', 'shipped', 'delivered')
+        ) AS has_purchased
+      `;
+      
+      const result = await db.query(query, [userId, productId]);
+      return result.rows[0].has_purchased;
+    } catch (error) {
+      logger.error('Error checking if user has purchased product', { 
+        error: error.message, 
+        userId, 
+        productId 
+      });
+      throw new DatabaseError('Failed to check purchase history');
+    }
+  },
+  
+
+
 
 };
 
 module.exports = productQueries;
+// getProductsByCategory
+
+

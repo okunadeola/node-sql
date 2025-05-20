@@ -79,12 +79,75 @@ exports.schemas = {
       email: Joi.string().email().required(),
       password: Joi.string().required()
     }),
+
+     email: Joi.object({
+      email: Joi.string().email().required()
+    }),
+
+     resetPassword: Joi.object({
+      token: Joi.string().required(),
+      password: Joi.string().min(8).required(),
+      password_confirm: Joi.string().valid(Joi.ref('password')).required()
+        .messages({ 'any.only': 'Passwords must match' })
+    }),
     
     changePassword: Joi.object({
       current_password: Joi.string().required(),
       new_password: Joi.string().min(8).required(),
       confirm_password: Joi.string().valid(Joi.ref('new_password')).required()
         .messages({ 'any.only': 'Passwords do not match' })
+    }),
+
+    userProfile: Joi.object({
+      username: Joi.string().alphanum().min(3).max(50),
+      first_name: Joi.string().max(50),
+      last_name: Joi.string().max(50),
+      phone: Joi.string().max(20),
+      email: Joi.string().email(),
+    }),
+
+    userAdmin: Joi.object({
+      username: Joi.string().alphanum().min(3).max(50),
+      email: Joi.string().email(),
+      first_name: Joi.string().max(50),
+      last_name: Joi.string().max(50),
+      phone: Joi.string().max(20),
+      role: Joi.string().valid('customer', 'admin', 'seller')
+    }),
+
+    userStatus: Joi.object({
+      account_status: Joi.string().valid('active', 'suspended', 'banned').required()
+    }),
+    
+    verificationToken: Joi.object({
+      token: Joi.string().required()
+    }),
+
+    address: Joi.object({
+      is_default: Joi.boolean().default(false),
+      address_type: Joi.string().valid('billing', 'shipping', 'both').required(),
+      first_name: Joi.string().max(50).required(),
+      last_name: Joi.string().max(50).required(),
+      address_line1: Joi.string().max(255).required(),
+      address_line2: Joi.string().max(255).allow('', null),
+      city: Joi.string().max(100).required(),
+      state: Joi.string().max(100).allow('', null),
+      postal_code: Joi.string().max(20).required(),
+      country: Joi.string().max(100).required(),
+      phone: Joi.string().max(20).allow('', null)
+    }),
+    
+    wishlist: Joi.object({
+      name: Joi.string().max(100).required(),
+      is_public: Joi.boolean().default(false)
+    }),
+
+    apiToken: Joi.object({
+      name: Joi.string().max(100).required(),
+      permissions: Joi.array().items(
+        Joi.string().valid('read', 'write', 'products', 'orders', 'users')
+      ).min(1).required(),
+      expires_in: Joi.number().integer().min(1).max(365).default(30) // Days
     })
   },
   
@@ -224,7 +287,35 @@ exports.schemas = {
       payment_provider: Joi.string().required(),
       transaction_id: Joi.string(),
       provider_response: Joi.object().allow(null)
-    })
+    }),
+    // Refund request validation
+  refund: Joi.object({
+    amount: Joi.number().positive().precision(2).required(),
+    reason: Joi.string().max(500).required(),
+    items: Joi.array().items(
+      Joi.object({
+        order_item_id: Joi.string().uuid().required(),
+        quantity: Joi.number().integer().min(1).required()
+      })
+    ),
+    refund_shipping: Joi.boolean().default(false)
+  }),
+
+  // Order item update validation
+  orderItem: Joi.object({
+    quantity: Joi.number().integer().min(0).required(),
+    price: Joi.number().precision(2).min(0),
+    notes: Joi.string().max(500).allow('', null)
+  }),
+
+  // Order history entry validation
+  orderHistory: Joi.object({
+    status: Joi.string().valid(
+      'pending', 'processing', 'on_hold', 'completed', 
+      'cancelled', 'refunded', 'failed', 'shipped', 'delivered'
+    ).required(),
+    comment: Joi.string().max(500).required()
+  }),
   },
   
   // Common pagination and sorting schemas
@@ -252,6 +343,30 @@ exports.createUser = exports.validate(exports.schemas.user.create);
 exports.updateUser = exports.validate(exports.schemas.user.update);
 exports.loginUser = exports.validate(exports.schemas.user.login);
 exports.changePassword = exports.validate(exports.schemas.user.changePassword);
+exports.email = exports.validate(exports.schemas.user.email);
+exports.resetPassword = exports.validate(exports.schemas.user.resetPassword);
+exports.userProfile = exports.validate(exports.schemas.user.userProfile);
+exports.userAdmin = exports.validate(exports.schemas.user.userAdmin);
+exports.userStatus = exports.validate(exports.schemas.user.userStatus);
+exports.verificationToken = exports.validate(exports.schemas.user.verificationToken);
+exports.address = exports.validate(exports.schemas.user.address);
+exports.wishlist = exports.validate(exports.schemas.user.wishlist);
+exports.apiToken = exports.validate(exports.schemas.user.apiToken);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 exports.createProduct = exports.validate(exports.schemas.product.create);
 exports.updateProduct = exports.validate(exports.schemas.product.update);
@@ -260,6 +375,9 @@ exports.searchProducts = exports.validate(exports.schemas.product.search, 'query
 exports.createOrder = exports.validate(exports.schemas.order.create);
 exports.updateOrderStatus = exports.validate(exports.schemas.order.updateStatus);
 exports.addOrderPayment = exports.validate(exports.schemas.order.addPayment);
+exports.orderItem = exports.validate(exports.schemas.order.orderItem);
+exports.orderHistory = exports.validate(exports.schemas.order.orderHistory);
+exports.refund = exports.validate(exports.schemas.order.refund);
 
 exports.validateUuid = exports.validate(exports.schemas.common.uuid, 'params');
 exports.validatePagination = exports.validate(exports.schemas.common.pagination, 'query');

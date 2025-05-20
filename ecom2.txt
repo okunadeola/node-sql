@@ -95,6 +95,7 @@ ecommerce-app/
 
 -- tables.sql: Database schema for e-commerce application
 -- Enable UUID generation
+
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- 1. Users Table
@@ -106,12 +107,24 @@ CREATE TABLE users (
     first_name VARCHAR(50),
     last_name VARCHAR(50),
     phone VARCHAR(20),
+    email_verified BOOLEAN DEFAULT FALSE,
     address JSONB,  -- Structured address data
     role VARCHAR(20) CHECK (role IN ('customer', 'admin', 'seller')) DEFAULT 'customer',
     account_status VARCHAR(20) CHECK (account_status IN ('active', 'suspended', 'banned')) DEFAULT 'active',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMP WITH TIME ZONE
+);
+
+CREATE TABLE user_tokens (
+  token_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  token VARCHAR(255) NOT NULL UNIQUE,
+  type VARCHAR(50) NOT NULL CHECK (type IN ('email_verification', 'password_reset', 'api_token')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  used BOOLEAN DEFAULT FALSE,
+  used_at TIMESTAMP WITH TIME ZONE
 );
 
 -- 2. Categories Table
@@ -449,104 +462,7 @@ CREATE INDEX idx_products_price_active_category ON products(price, is_active, ca
 CREATE INDEX idx_product_images_product_id ON product_images(product_id);
 CREATE INDEX idx_product_images_is_primary ON product_images(is_primary);
 
--- Product Attributes Table Indexes
-CREATE INDEX idx_product_attributes_product_id ON product_attributes(product_id);
-CREATE INDEX idx_product_attributes_name ON product_attributes(name);
-CREATE INDEX idx_product_attributes_name_value ON product_attributes(name, value);
 
--- Inventory Table Indexes
-CREATE INDEX idx_inventory_product_id ON inventory(product_id);
-CREATE INDEX idx_inventory_quantity ON inventory(quantity);
--- Index for low stock alerts
-CREATE INDEX idx_inventory_low_stock ON inventory(quantity) WHERE quantity <= low_stock_threshold;
-
--- Shopping Cart Table Indexes
-CREATE INDEX idx_shopping_carts_user_id ON shopping_carts(user_id);
-CREATE INDEX idx_shopping_carts_session_id ON shopping_carts(session_id);
-CREATE INDEX idx_shopping_carts_created_at ON shopping_carts(created_at);
-CREATE INDEX idx_shopping_carts_expires_at ON shopping_carts(expires_at);
-
--- Cart Items Table Indexes
-CREATE INDEX idx_cart_items_cart_id ON cart_items(cart_id);
-CREATE INDEX idx_cart_items_product_id ON cart_items(product_id);
-
--- Orders Table Indexes
-CREATE INDEX idx_orders_user_id ON orders(user_id);
-CREATE INDEX idx_orders_order_number ON orders(order_number);
-CREATE INDEX idx_orders_status ON orders(status);
-CREATE INDEX idx_orders_payment_status ON orders(payment_status);
-CREATE INDEX idx_orders_created_at ON orders(created_at);
-CREATE INDEX idx_orders_completed_at ON orders(completed_at);
--- Composite index for order analytics
-CREATE INDEX idx_orders_status_created_at ON orders(status, created_at);
-
--- Order Items Table Indexes
-CREATE INDEX idx_order_items_order_id ON order_items(order_id);
-CREATE INDEX idx_order_items_product_id ON order_items(product_id);
-
--- Payments Table Indexes
-CREATE INDEX idx_payments_order_id ON payments(order_id);
-CREATE INDEX idx_payments_transaction_id ON payments(transaction_id);
-CREATE INDEX idx_payments_status ON payments(status);
-CREATE INDEX idx_payments_created_at ON payments(created_at);
-
--- Order History Table Indexes
-CREATE INDEX idx_order_history_order_id ON order_history(order_id);
-CREATE INDEX idx_order_history_created_at ON order_history(created_at);
-
--- Product Reviews Table Indexes
-CREATE INDEX idx_product_reviews_product_id ON product_reviews(product_id);
-CREATE INDEX idx_product_reviews_user_id ON product_reviews(user_id);
-CREATE INDEX idx_product_reviews_rating ON product_reviews(rating);
-CREATE INDEX idx_product_reviews_status ON product_reviews(status);
--- Index for finding verified purchase reviews
-CREATE INDEX idx_product_reviews_verified_purchase ON product_reviews(is_verified_purchase) WHERE is_verified_purchase = TRUE;
-
--- Wishlist Table Indexes
-CREATE INDEX idx_wishlists_user_id ON wishlists(user_id);
-
--- Wishlist Items Table Indexes
-CREATE INDEX idx_wishlist_items_wishlist_id ON wishlist_items(wishlist_id);
-CREATE INDEX idx_wishlist_items_product_id ON wishlist_items(product_id);
-
--- Discounts Table Indexes
-CREATE INDEX idx_discounts_code ON discounts(code);
-CREATE INDEX idx_discounts_is_active ON discounts(is_active);
-CREATE INDEX idx_discounts_date_range ON discounts(starts_at, ends_at);
--- This index helps find valid discounts quickly
-CREATE INDEX idx_discounts_active_dates ON discounts(is_active, starts_at, ends_at);
-
--- User Addresses Table Indexes
-CREATE INDEX idx_user_addresses_user_id ON user_addresses(user_id);
-CREATE INDEX idx_user_addresses_is_default ON user_addresses(is_default);
-
--- User Notifications Table Indexes
-CREATE INDEX idx_user_notifications_user_id ON user_notifications(user_id);
-CREATE INDEX idx_user_notifications_is_read ON user_notifications(is_read);
-CREATE INDEX idx_user_notifications_created_at ON user_notifications(created_at);
-
--- API Tokens Table Indexes
-CREATE INDEX idx_api_tokens_user_id ON api_tokens(user_id);
-CREATE INDEX idx_api_tokens_token ON api_tokens(token);
-CREATE INDEX idx_api_tokens_expires_at ON api_tokens(expires_at);
-
--- Tags Table Indexes
-CREATE INDEX idx_tags_name ON tags(name);
-CREATE INDEX idx_tags_slug ON tags(slug);
-
--- Partial Index for Fast Access to Active Products
-CREATE INDEX idx_active_products ON products(product_id) WHERE is_active = TRUE;
-
--- Full Text Search for Products
--- Enable the extension if not already enabled
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
--- Create GIN index for full-text search on product names and descriptions
-CREATE INDEX idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
-CREATE INDEX idx_products_description_trgm ON products USING GIN (description gin_trgm_ops);
-
--- Create a GIN index for JSONB fields
-CREATE INDEX idx_product_attributes_jsonb ON product_attributes USING GIN (value jsonb_path_ops) WHERE jsonb_typeof(value) = 'object';
-CREATE INDEX idx_order_items_product_data ON order_items USING GIN (product_data);
 
 
 // server/src/config/db.js DONE
@@ -555,7 +471,7 @@ CREATE INDEX idx_order_items_product_data ON order_items USING GIN (product_data
 
 // server/src/utils/logger.js DONE
 
-// server/src/utils/sqlBuilder.js 
+// server/src/utils/sqlBuilder.js  DONE
 /**
  * SQL Query Builder
  * Provides utilities for dynamically building SQL queries
@@ -923,9 +839,7 @@ module.exports = {
 };
 
 
-
-// server/src/db/queries/products.js DONE
-snippet
+// server/src/db/queries/products.js
 const db = require('../../config/db');
 const SqlBuilder = require('../../utils/sqlBuilder');
 const logger = require('../../utils/logger');
@@ -934,95 +848,271 @@ const { NotFoundError, DatabaseError } = require('../../utils/error');
 /**
  * Product Queries
  */
- Snippets
-const productQueries = {  
+const productQueries = {
+
+
   /**
-   * Get related products based on shared categories, tags, and attributes
-   * @param {string} productId - Product ID
-   * @param {number} limit - Number of related products to return
-   * @returns {Promise<Array>} Related products
+   * Get trending products based on views, orders, and ratings
+   * @param {Object} options - Filter options and limits
+   * @returns {Promise<Array>} Trending products
    */
-  getRelatedProducts: async (productId, limit = 6) => {
+  getTrendingProducts: async ({ timeframe = '7 days', categoryId = null, limit = 10 }) => {
     try {
+      const params = [timeframe];
+      let categoryFilter = '';
+      
+      if (categoryId) {
+        categoryFilter = 'AND p.category_id = $2';
+        params.push(categoryId);
+      }
+      
+      params.push(limit);
+      
       const query = `
-        WITH product_info AS (
+        WITH recent_orders AS (
           SELECT 
-            category_id,
-            (
-              SELECT ARRAY_AGG(tag_id) 
-              FROM product_tags 
-              WHERE product_id = $1
-            ) AS tag_ids,
-            (
-              SELECT ARRAY_AGG(name) 
-              FROM product_attributes 
-              WHERE product_id = $1
-            ) AS attribute_names
-        FROM 
-          products
-        WHERE 
-          product_id = $1
+            oi.product_id,
+            COUNT(*) AS order_count,
+            SUM(oi.quantity) AS total_quantity_ordered
+          FROM 
+            order_items oi
+          JOIN 
+            orders o ON oi.order_id = o.order_id
+          WHERE 
+            o.created_at >= NOW() - $1::INTERVAL
+            AND o.status NOT IN ('cancelled', 'refunded', 'failed')
+          GROUP BY 
+            oi.product_id
         ),
-        related_score AS (
+        recent_reviews AS (
+          SELECT 
+            product_id,
+            COUNT(*) AS review_count,
+            AVG(rating) AS avg_recent_rating
+          FROM 
+            product_reviews
+          WHERE 
+            created_at >= NOW() - $1::INTERVAL
+            AND status = 'approved'
+          GROUP BY 
+            product_id
+        ),
+        trending_score AS (
           SELECT 
             p.product_id,
             p.name,
             p.price,
             p.brand,
+            c.name AS category_name,
             (
               SELECT url 
               FROM product_images 
               WHERE product_id = p.product_id AND is_primary = TRUE 
               LIMIT 1
             ) AS primary_image,
-            CASE WHEN p.category_id = (SELECT category_id FROM product_info) THEN 3 ELSE 0 END +
-            (
-              SELECT COUNT(*) 
-              FROM product_tags pt 
-              WHERE pt.product_id = p.product_id 
-                AND pt.tag_id = ANY((SELECT tag_ids FROM product_info))
-            ) * 2 +
-            (
-              SELECT COUNT(*) 
-              FROM product_attributes pa 
-              WHERE pa.product_id = p.product_id 
-                AND pa.name = ANY((SELECT attribute_names FROM product_info))
-            ) AS relevance_score
+            COALESCE(ro.order_count, 0) * 10 +
+            COALESCE(ro.total_quantity_ordered, 0) * 2 +
+            COALESCE(rr.review_count, 0) * 5 +
+            COALESCE(rr.avg_recent_rating, 0) * 3 AS trend_score
           FROM 
             products p
+          LEFT JOIN 
+            recent_orders ro ON p.product_id = ro.product_id
+          LEFT JOIN 
+            recent_reviews rr ON p.product_id = rr.product_id
+          LEFT JOIN
+            categories c ON p.category_id = c.category_id
           WHERE 
-            p.product_id != $1
-            AND p.is_active = TRUE
+            p.is_active = TRUE
+            ${categoryFilter}
         )
-        SELECT * FROM related_score
-        WHERE relevance_score > 0
-        ORDER BY relevance_score DESC, name
-        LIMIT $2
+        SELECT * FROM trending_score
+        WHERE trend_score > 0
+        ORDER BY trend_score DESC, name
+        LIMIT $${params.length}
       `;
       
-      const result = await db.query(query, [productId, limit]);
+      const result = await db.query(query, params);
       return result.rows;
     } catch (error) {
-      logger.error('Error fetching related products', { error: error.message, productId });
-      throw new DatabaseError('Failed to fetch related products');
+      logger.error('Error fetching trending products', { error: error.message });
+      throw new DatabaseError('Failed to fetch trending products');
     }
   },
 }
-module.exports = productQueries;
 
-// server/src/db/queries/orders.js DONE
-// server/src/db/queries/users.js DONE
-// server/src/db/queries/analytics.js DONE
-// server/src/controllers/products.js DONE
-// server/src/controllers/orders.js DONE
-// server/src/controllers/users.js DONE
-// server/src/controllers/analytics.js DONE
-// server/src/middlewares/auth.js DONE
-// server/src/middlewares/errorHandler.js DONE
-// server/src/middlewares/validation.js DONE
-routes DONE
-server.js DONE
-Database Migration Manager  DONE
+/**
+ * Product Controller
+ * Handles all product-related operations
+ */
+const productQueries = require('../db/queries/products');
+const searchQueries = require('../db/queries/search');
+const { NotFoundError, ValidationError } = require('../utils/error');
+const logger = require('../utils/logger');
 
+/**
+ * Get a list of products with pagination and filtering
+ */
+exports.listProducts = async (req, res, next) => {}
 
 
+
+
+/**
+ * Validation Middleware
+ * Provides request validation using Joi
+ */
+const Joi = require('joi');
+const { ValidationError } = require('../utils/error');
+
+/**
+ * Validate request body, query parameters, or URL parameters
+ * @param {Object} schema - Joi validation schema
+ * @param {string} source - Request property to validate ('body', 'query', 'params')
+ * @returns {Function} Express middleware
+ */
+exports.validate = (schema, source = 'body') => {
+  return (req, res, next) => {
+    const data = req[source];
+    const { error, value } = schema.validate(data, {
+      abortEarly: false,
+      stripUnknown: true,
+      errors: { wrap: { label: false } }
+    });
+    
+    if (error) {
+      const errorDetails = error.details.map(detail => ({
+        field: detail.path.join('.'),
+        message: detail.message
+      }));
+      
+      return next(new ValidationError('Validation failed', 400, 'VALIDATION_ERROR', errorDetails));
+    }
+    
+    // Replace the request data with the validated value
+    req[source] = value;
+    next();
+  };
+};
+
+/**
+ * Common validation schemas
+ */
+exports.schemas = {
+  // User validation schemas
+  user: {
+    create: Joi.object({
+      username: Joi.string().alphanum().min(3).max(50).required(),
+      email: Joi.string().email().required(),
+      password: Joi.string().min(8).required(),
+      first_name: Joi.string().max(50),
+      last_name: Joi.string().max(50),
+      phone: Joi.string().max(20),
+      address: Joi.object({
+        address_line1: Joi.string().required(),
+        address_line2: Joi.string().allow('', null),
+        city: Joi.string().required(),
+        state: Joi.string().allow('', null),
+        postal_code: Joi.string().required(),
+        country: Joi.string().required()
+      }),
+      role: Joi.string().valid('customer', 'admin', 'seller').default('customer')
+    }),
+    }
+}
+exports.createUser = exports.validate(exports.schemas.user.create);
+
+
+
+
+
+/**
+ * Order Controller
+ * Handles order-related requests and processing
+ */
+const orderQueries = require('../db/queries/orders');
+const productQueries = require('../db/queries/products');
+const inventoryQueries = require('../db/queries/inventory');
+const { BadRequestError, NotFoundError, ConflictError, AuthorizationError } = require('../utils/error');
+const logger = require('../utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const { generateOrderNumber } = require('../utils/orderHelpers');
+const { createCsvStringifier } = require('csv-writer');
+
+/**
+ * Get all orders (admin/seller)
+ */
+exports.getAllOrders = async (req, res, next) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      fromDate,
+      toDate,
+      customerId,
+      minAmount,
+      maxAmount,
+      sortBy = 'created_at',
+      sortOrder = 'DESC'
+    } = req.query;
+    
+    // Convert string values to appropriate types
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      status,
+      fromDate: fromDate ? new Date(fromDate) : undefined,
+      toDate: toDate ? new Date(toDate) : undefined,
+      customerId,
+      minAmount: minAmount ? parseFloat(minAmount) : undefined,
+      maxAmount: maxAmount ? parseFloat(maxAmount) : undefined,
+      sortBy,
+      sortOrder: sortOrder.toUpperCase()
+    };
+    
+    const result = await orderQueries.getAllOrders(options);
+    
+    res.status(200).json({
+      success: true,
+      data: result.orders,
+      pagination: result.pagination
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get orders for authenticated user
+ */
+exports.getMyOrders = async (req, res, next) => {
+  try {
+    const userId = req.user.user_id;
+    const {
+      page = 1,
+      limit = 10,
+      status,
+      fromDate,
+      toDate,
+      sortBy = 'created_at',
+      sortOrder = 'DESC'
+    } = req.query;
+    
+    // Convert string values to appropriate types
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      status,
+      fromDate: fromDate ? new Date(fromDate) : undefined,
+      toDate: toDate ? new Date(toDate) : undefined,
+      sortBy,
+      sortOrder: sortOrder.toUpperCase()
+    };
+    
+    const result = await orderQueries.getOrdersByUser(userId, options);
+    
+    res    CONTINUE
+  }
+
+}

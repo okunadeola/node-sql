@@ -249,6 +249,32 @@ const orderQueries = {
       throw new DatabaseError('Failed to fetch order');
     }
   },
+  /**
+   * Get order by ID
+   * @param {string} orderId - Order ID
+   * @returns {Promise<Object>} Order with items
+   */
+  getOrderItems: async (orderId) => {
+    try {
+      // Get order
+      const itemsQuery = `
+        SELECT * FROM order_items
+        WHERE order_id = $1
+        ORDER BY created_at
+      `;
+      
+      const itemsResult = await db.query(itemsQuery, [orderId]);
+      
+      return  itemsResult.rows;
+    } catch (error) {
+      logger.error('Error fetching order', { error: error.message, orderId });
+      
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      throw new DatabaseError('Failed to fetch order');
+    }
+  },
   
   /**
    * Update order status
@@ -258,10 +284,10 @@ const orderQueries = {
    * @returns {Promise<Object>} Updated order
    */
   updateOrderStatus: async (orderId, status, options = {}) => {
-    const client = await db.getClient();
+
     
     try {
-      await client.query('BEGIN');
+      await db.query('BEGIN');
       
       // Update order status
       const updateQuery = `
@@ -273,24 +299,24 @@ const orderQueries = {
         RETURNING *
       `;
       
-      const result = await client.query(updateQuery, [status, orderId]);
+      const result = await db.query(updateQuery, [status, orderId]);
       
       if (result.rows.length === 0) {
         throw new NotFoundError(`Order not found: ${orderId}`);
       }
       
       // Add order history entry
-      await client.query(
+      await db.query(
         `INSERT INTO order_history (order_id, status, comment, created_by)
          VALUES ($1, $2, $3, $4)`,
         [orderId, status, options.comment || `Status updated to ${status}`, options.userId]
       );
       
-      await client.query('COMMIT');
+      await db.query('COMMIT');
       
       return result.rows[0];
     } catch (error) {
-      await client.query('ROLLBACK');
+      await db.query('ROLLBACK');
       logger.error('Error updating order status', { error: error.message, orderId, status });
       
       if (error instanceof NotFoundError) {
@@ -561,6 +587,815 @@ const orderQueries = {
       FROM order_info oi
       WHERE orders.order_id = '${orderId}'
       RETURNING *;`;
+  },
+    /**
+   * Get all orders with pagination and filtering
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} Orders with pagination info
+   */
+  getAllOrders: async (options = {}) => {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        status,
+        fromDate,
+        toDate,
+        customerId,
+        minAmount,
+        maxAmount,
+        sortBy = 'created_at',
+        sortOrder = 'DESC'
+      } = options;
+      
+      // Build filters
+      const filters = {};
+      
+      if (status) {
+        filters.status = Array.isArray(status) ? { operator: 'IN', value: status } : status;
+      }
+      
+      if (customerId) {
+        filters.user_id = customerId;
+      }
+      
+      if (fromDate || toDate) {
+        filters.created_at = {};
+        if (fromDate) filters.created_at['>='] = fromDate;
+        if (toDate) filters.created_at['<='] = toDate;
+      }
+      
+      // Create query with SqlBuilder
+      const { query, params, pagination } = SqlBuilder.buildSelectQuery(
+        'orders',
+        ['*'],
+        filters,
+        {
+          sort: `${sortBy} ${sortOrder}`,
+          pagination: { page, limit }
+        }
+      );
+      
+      // Execute query
+      const result = await db.query(query, params);
+      
+      // Get total count for pagination
+      const countQuery = SqlBuilder.buildCountQuery('orders', filters);
+      const countResult = await db.query(countQuery.query, countQuery.params);
+      const totalCount = parseInt(countResult.rows[0].total, 10);
+      
+      return {
+        orders: result.rows,
+        pagination: {
+          page: pagination.page,
+          limit: pagination.limit,
+          totalItems: totalCount,
+          totalPages: Math.ceil(totalCount / pagination.limit)
+        }
+      };
+    } catch (error) {
+      logger.error('Error fetching all orders', { error: error.message });
+      throw new DatabaseError('Failed to fetch orders');
+    }
+  },
+  
+  /**
+   * Get orders for a specific customer
+   * @param {string} userId - User ID
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} Orders with pagination info
+   */
+  getOrdersByUser: async (userId, options = {}) => {
+    try {
+      const {
+        page = 1,
+        limit = 10,
+        status,
+        fromDate,
+        toDate,
+        sortBy = 'created_at',
+        sortOrder = 'DESC'
+      } = options;
+      
+      // Build filters
+      const filters = { user_id: userId };
+      
+      if (status) {
+        filters.status = Array.isArray(status) ? { operator: 'IN', value: status } : status;
+      }
+      
+      if (fromDate || toDate) {
+        filters.created_at = {};
+        if (fromDate) filters.created_at['>='] = fromDate;
+        if (toDate) filters.created_at['<='] = toDate;
+      }
+      
+      // Create query with SqlBuilder
+      const { query, params, pagination } = SqlBuilder.buildSelectQuery(
+        'orders',
+        ['*'],
+        filters,
+        {
+          sort: `${sortBy} ${sortOrder}`,
+          pagination: { page, limit }
+        }
+      );
+      
+      // Execute query
+      const result = await db.query(query, params);
+      
+      // Get total count for pagination
+      const countQuery = SqlBuilder.buildCountQuery('orders', filters);
+      const countResult = await db.query(countQuery.query, countQuery.params);
+      const totalCount = parseInt(countResult.rows[0].total, 10);
+      
+      return {
+        orders: result.rows,
+        pagination: {
+          page: pagination.page,
+          limit: pagination.limit,
+          totalItems: totalCount,
+          totalPages: Math.ceil(totalCount / pagination.limit)
+        }
+      };
+    } catch (error) {
+      logger.error('Error fetching orders by user', { error: error.message, userId });
+      throw new DatabaseError('Failed to fetch orders');
+    }
+  },
+  
+  /**
+   * Get a single order by ID
+   * @param {string} orderId - Order ID
+   * @returns {Promise<Object>} Order details
+   */
+  getOrderById2: async (orderId) => {
+    try {
+      // Get order details
+      const orderQuery = `
+        SELECT * FROM orders WHERE order_id = $1
+      `;
+      const orderResult = await db.query(orderQuery, [orderId]);
+      
+      if (orderResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      // Get order items
+      const itemsQuery = `
+        SELECT oi.*, p.name as product_name, p.sku as product_sku,
+          (SELECT url FROM product_images WHERE product_id = p.product_id AND is_primary = TRUE LIMIT 1) as product_image
+        FROM order_items oi
+        LEFT JOIN products p ON oi.product_id = p.product_id
+        WHERE oi.order_id = $1
+      `;
+      const itemsResult = await db.query(itemsQuery, [orderId]);
+      
+      // Get payment information
+      const paymentQuery = `
+        SELECT * FROM payments WHERE order_id = $1
+      `;
+      const paymentResult = await db.query(paymentQuery, [orderId]);
+      
+      // Return complete order details
+      return {
+        ...orderResult.rows[0],
+        items: itemsResult.rows,
+        payments: paymentResult.rows
+      };
+    } catch (error) {
+      logger.error('Error fetching order by ID', { error: error.message, orderId });
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      throw new DatabaseError('Failed to fetch order details');
+    }
+  },
+  
+  /**
+   * Create a new order
+   * @param {Object} orderData - Order data
+   * @param {Array} orderItems - Order items
+   * @param {Object} client - DB transaction client
+   * @returns {Promise<Object>} Created order
+   */
+  createOrder2: async (orderData, orderItems, client = db) => {
+    try {
+      // Prepare order data insertion
+      const { query: orderQuery, values: orderValues } = SqlBuilder.buildInsertQuery(
+        'orders',
+        orderData
+      );
+      
+      // Insert order
+      const orderResult = await client.query(orderQuery, orderValues);
+      const order = orderResult.rows[0];
+      
+      // Prepare order items
+      const orderItemsPromises = orderItems.map(item => {
+        const orderItem = {
+          ...item,
+          order_id: order.order_id
+        };
+        
+        const { query: itemQuery, values: itemValues } = SqlBuilder.buildInsertQuery(
+          'order_items',
+          orderItem
+        );
+        
+        return client.query(itemQuery, itemValues);
+      });
+      
+      // Insert order items
+      const orderItemsResults = await Promise.all(orderItemsPromises);
+      const items = orderItemsResults.map(result => result.rows[0]);
+      
+      // Create initial order history entry
+      const historyEntry = {
+        order_id: order.order_id,
+        status: order.status,
+        comment: 'Order created',
+        created_by: orderData.user_id
+      };
+      
+      const { query: historyQuery, values: historyValues } = SqlBuilder.buildInsertQuery(
+        'order_history',
+        historyEntry
+      );
+      
+      await client.query(historyQuery, historyValues);
+      
+      return {
+        ...order,
+        items
+      };
+    } catch (error) {
+      logger.error('Error creating order', { error: error.message });
+      throw new DatabaseError('Failed to create order');
+    }
+  },
+  
+  /**
+   * Update order status
+   * @param {string} orderId - Order ID
+   * @param {string} status - New status
+   * @param {string} comment - Status change comment
+   * @param {string} userId - User making the change
+   * @returns {Promise<Object>} Updated order
+   */
+  updateOrderStatus2: async (orderId, status, comment, userId) => {
+    // Start a transaction
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Update order status
+      const updateQuery = `
+        UPDATE orders
+        SET 
+          status = $1,
+          updated_at = CURRENT_TIMESTAMP,
+          completed_at = CASE WHEN $1 = 'completed' THEN CURRENT_TIMESTAMP ELSE completed_at END
+        WHERE order_id = $2
+        RETURNING *
+      `;
+      
+      const updateResult = await client.query(updateQuery, [status, orderId]);
+      
+      if (updateResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      // Add order history entry
+      const historyInsertQuery = `
+        INSERT INTO order_history (order_id, status, comment, created_by)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+      `;
+      
+      await client.query(historyInsertQuery, [orderId, status, comment, userId]);
+      
+      await client.query('COMMIT');
+      
+      return updateResult.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Error updating order status', { error: error.message, orderId, status });
+      
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      throw new DatabaseError('Failed to update order status');
+    } finally {
+      client.release();
+    }
+  },
+  
+  /**
+   * Cancel an order
+   * @param {string} orderId - Order ID
+   * @param {string} userId - User ID cancelling the order
+   * @param {string} reason - Cancellation reason
+   * @returns {Promise<Object>} Cancelled order
+   */
+  cancelOrder: async (orderId, userId, reason) => {
+    // Start a transaction
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Get current order status
+      const orderQuery = `SELECT status FROM orders WHERE order_id = $1`;
+      const orderResult = await client.query(orderQuery, [orderId]);
+      
+      if (orderResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      const currentStatus = orderResult.rows[0].status;
+      const nonCancellableStatuses = ['completed', 'cancelled', 'refunded', 'delivered'];
+      
+      if (nonCancellableStatuses.includes(currentStatus)) {
+        throw new ConflictError(`Cannot cancel order with status: ${currentStatus}`);
+      }
+      
+      // Update order status
+      const updateQuery = `
+        UPDATE orders
+        SET 
+          status = 'cancelled',
+          updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = $1
+        RETURNING *
+      `;
+      
+      const updateResult = await client.query(updateQuery, [orderId]);
+      
+      // Add order history entry
+      const historyInsertQuery = `
+        INSERT INTO order_history (order_id, status, comment, created_by)
+        VALUES ($1, 'cancelled', $2, $3)
+        RETURNING *
+      `;
+      
+      await client.query(historyInsertQuery, [orderId, reason || 'Order cancelled by user', userId]);
+      
+      // Return inventory to stock if needed
+      const updateInventoryQuery = `
+        UPDATE inventory i
+        SET 
+          quantity = i.quantity + oi.quantity,
+          updated_at = CURRENT_TIMESTAMP
+        FROM order_items oi
+        WHERE oi.order_id = $1 AND i.product_id = oi.product_id
+      `;
+      
+      await client.query(updateInventoryQuery, [orderId]);
+      
+      await client.query('COMMIT');
+      
+      return updateResult.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Error cancelling order', { error: error.message, orderId });
+      
+      if (error instanceof NotFoundError || error instanceof ConflictError) {
+        throw error;
+      }
+      
+      throw new DatabaseError('Failed to cancel order');
+    } finally {
+      client.release();
+    }
+  },
+  
+  /**
+   * Process refund for an order
+   * @param {string} orderId - Order ID
+   * @param {Object} refundData - Refund information
+   * @param {string} userId - User ID processing the refund
+   * @returns {Promise<Object>} Refund details
+   */
+  refundOrder: async (orderId, refundData, userId) => {
+    // Start a transaction
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Check order exists and is in refundable state
+      const orderQuery = `SELECT * FROM orders WHERE order_id = $1`;
+      const orderResult = await client.query(orderQuery, [orderId]);
+      
+      if (orderResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      const order = orderResult.rows[0];
+      const nonRefundableStatuses = ['refunded', 'cancelled'];
+      
+      if (nonRefundableStatuses.includes(order.status)) {
+        throw new ConflictError(`Cannot refund order with status: ${order.status}`);
+      }
+      
+      // Update order status
+      const updateOrderQuery = `
+        UPDATE orders
+        SET 
+          status = 'refunded',
+          updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = $1
+        RETURNING *
+      `;
+      
+      await client.query(updateOrderQuery, [orderId]);
+      
+      // Record refund in payment table
+      const refundPaymentQuery = `
+        INSERT INTO payments (
+          order_id, amount, payment_method, payment_provider,
+          transaction_id, status, provider_response
+        )
+        VALUES ($1, $2, $3, $4, $5, 'refunded', $6)
+        RETURNING *
+      `;
+      
+      const refundPaymentParams = [
+        orderId,
+        refundData.amount,
+        refundData.payment_method || order.payment_method,
+        refundData.payment_provider,
+        refundData.transaction_id,
+        refundData.provider_response || {}
+      ];
+      
+      const refundResult = await client.query(refundPaymentQuery, refundPaymentParams);
+      
+      // Add order history entry
+      const historyInsertQuery = `
+        INSERT INTO order_history (order_id, status, comment, created_by)
+        VALUES ($1, 'refunded', $2, $3)
+        RETURNING *
+      `;
+      
+      await client.query(historyInsertQuery, [
+        orderId, 
+        refundData.reason || 'Order refunded', 
+        userId
+      ]);
+      
+      // Return inventory to stock if needed
+      if (refundData.return_to_inventory) {
+        const updateInventoryQuery = `
+          UPDATE inventory i
+          SET 
+            quantity = i.quantity + oi.quantity,
+            updated_at = CURRENT_TIMESTAMP
+          FROM order_items oi
+          WHERE oi.order_id = $1 AND i.product_id = oi.product_id
+        `;
+        
+        await client.query(updateInventoryQuery, [orderId]);
+      }
+      
+      await client.query('COMMIT');
+      
+      return refundResult.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Error processing refund', { error: error.message, orderId });
+      
+      if (error instanceof NotFoundError || error instanceof ConflictError) {
+        throw error;
+      }
+      
+      throw new DatabaseError('Failed to process refund');
+    } finally {
+      client.release();
+    }
+  },
+  
+  /**
+   * Update order item
+   * @param {string} orderId - Order ID
+   * @param {string} itemId - Order item ID
+   * @param {Object} itemData - Updated item data
+   * @returns {Promise<Object>} Updated order item
+   */
+  updateOrderItem: async (orderId, itemId, itemData) => {
+    try {
+      // Check if order is in editable state
+      const orderQuery = `SELECT status FROM orders WHERE order_id = $1`;
+      const orderResult = await db.query(orderQuery, [orderId]);
+      
+      if (orderResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      const status = orderResult.rows[0].status;
+      const nonEditableStatuses = ['completed', 'cancelled', 'refunded', 'delivered'];
+      
+      if (nonEditableStatuses.includes(status)) {
+        throw new ConflictError(`Cannot edit items for order with status: ${status}`);
+      }
+      
+      // Update order item
+      const { query, values } = SqlBuilder.buildUpdateQuery(
+        'order_items',
+        itemData,
+        { order_item_id: itemId, order_id: orderId }
+      );
+      
+      const result = await db.query(query, values);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundError(`Order item not found with ID: ${itemId}`);
+      }
+      
+      // If quantity changed, update order totals
+      if ('quantity' in itemData || 'unit_price' in itemData) {
+        await updateOrderTotals(orderId);
+      }
+      
+      return result.rows[0];
+    } catch (error) {
+      logger.error('Error updating order item', { error: error.message, orderId, itemId });
+      
+      if (error instanceof NotFoundError || error instanceof ConflictError) {
+        throw error;
+      }
+      
+      throw new DatabaseError('Failed to update order item');
+    }
+  },
+  
+  /**
+   * Get order history
+   * @param {string} orderId - Order ID
+   * @returns {Promise<Array>} Order history entries
+   */
+  getOrderHistory: async (orderId) => {
+    try {
+      const query = `
+        SELECT 
+          oh.*,
+          u.username as user_username,
+          u.first_name as user_first_name,
+          u.last_name as user_last_name
+        FROM order_history oh
+        LEFT JOIN users u ON oh.created_by = u.user_id
+        WHERE oh.order_id = $1
+        ORDER BY oh.created_at DESC
+      `;
+      
+      const result = await db.query(query, [orderId]);
+      
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching order history', { error: error.message, orderId });
+      throw new DatabaseError('Failed to fetch order history');
+    }
+  },
+  
+  /**
+   * Add order history entry
+   * @param {string} orderId - Order ID
+   * @param {Object} historyData - History entry data
+   * @returns {Promise<Object>} Created history entry
+   */
+  addOrderHistoryEntry: async (orderId, historyData) => {
+    try {
+      // Check if order exists
+      const orderQuery = `SELECT order_id FROM orders WHERE order_id = $1`;
+      const orderResult = await db.query(orderQuery, [orderId]);
+      
+      if (orderResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      // Add history entry
+      const { query, values } = SqlBuilder.buildInsertQuery(
+        'order_history',
+        { ...historyData, order_id: orderId }
+      );
+      
+      const result = await db.query(query, values);
+      
+      return result.rows[0];
+    } catch (error) {
+      logger.error('Error adding order history entry', { error: error.message, orderId });
+      
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      throw new DatabaseError('Failed to add order history entry');
+    }
+  },
+  
+  /**
+   * Process payment for an order
+   * @param {string} orderId - Order ID
+   * @param {Object} paymentData - Payment data
+   * @returns {Promise<Object>} Payment result
+   */
+  processPayment: async (orderId, paymentData) => {
+    // Start a transaction
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Check order exists and is in payable state
+      const orderQuery = `SELECT * FROM orders WHERE order_id = $1`;
+      const orderResult = await client.query(orderQuery, [orderId]);
+      
+      if (orderResult.rows.length === 0) {
+        throw new NotFoundError(`Order not found with ID: ${orderId}`);
+      }
+      
+      const order = orderResult.rows[0];
+      
+      if (order.payment_status === 'paid') {
+        throw new ConflictError('Order has already been paid');
+      }
+      
+      // Record payment
+      const paymentInsertQuery = `
+        INSERT INTO payments (
+          order_id, amount, payment_method, payment_provider,
+          transaction_id, status, provider_response
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `;
+      
+      const paymentInsertParams = [
+        orderId,
+        paymentData.amount,
+        paymentData.payment_method,
+        paymentData.payment_provider,
+        paymentData.transaction_id,
+        paymentData.status || 'completed',
+        paymentData.provider_response || {}
+      ];
+      
+      const paymentResult = await client.query(paymentInsertQuery, paymentInsertParams);
+      
+      // Update order payment status
+      const updateOrderQuery = `
+        UPDATE orders
+        SET 
+          payment_status = $1,
+          status = CASE WHEN status = 'pending' THEN 'processing' ELSE status END,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = $2
+        RETURNING *
+      `;
+      
+      const paymentStatus = paymentData.status === 'completed' ? 'paid' : paymentData.status;
+      await client.query(updateOrderQuery, [paymentStatus, orderId]);
+      
+      // Add order history entry
+      const historyInsertQuery = `
+        INSERT INTO order_history (order_id, status, comment, created_by)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+      `;
+      
+      await client.query(historyInsertQuery, [
+        orderId, 
+        'payment_' + paymentStatus, 
+        `Payment processed via ${paymentData.payment_method}`, 
+        order.user_id
+      ]);
+      
+      await client.query('COMMIT');
+      
+      return paymentResult.rows[0];
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Error processing payment', { error: error.message, orderId });
+      
+      if (error instanceof NotFoundError || error instanceof ConflictError) {
+        throw error;
+      }
+      
+      throw new DatabaseError('Failed to process payment');
+    } finally {
+      client.release();
+    }
+  },
+  
+  /**
+   * Get payment details for an order
+   * @param {string} orderId - Order ID
+   * @returns {Promise<Array>} Payment details
+   */
+  getPaymentDetails: async (orderId) => {
+    try {
+      const query = `SELECT * FROM payments WHERE order_id = $1 ORDER BY created_at DESC`;
+      const result = await db.query(query, [orderId]);
+      
+      return result.rows;
+    } catch (error) {
+      logger.error('Error fetching payment details', { error: error.message, orderId });
+      throw new DatabaseError('Failed to fetch payment details');
+    }
+  },
+  
+  /**
+   * Export orders to CSV format
+   * @param {Object} filters - Export filters
+   * @returns {Promise<Array>} Orders data for CSV export
+   */
+  exportOrdersData: async (filters = {}) => {
+    try {
+      const { fromDate, toDate, status } = filters;
+      
+      // Construct WHERE clause
+      let whereClause = '';
+      const params = [];
+      let paramIndex = 1;
+      
+      if (fromDate || toDate) {
+        if (fromDate) {
+          whereClause += `${whereClause ? ' AND ' : ' WHERE '}o.created_at >= $${paramIndex++}`;
+          params.push(fromDate);
+        }
+        
+        if (toDate) {
+          whereClause += `${whereClause ? ' AND ' : ' WHERE '}o.created_at <= $${paramIndex++}`;
+          params.push(toDate);
+        }
+      }
+      
+      if (status) {
+        whereClause += `${whereClause ? ' AND ' : ' WHERE '}o.status = $${paramIndex++}`;
+        params.push(status);
+      }
+      
+      const query = `
+        SELECT 
+          o.order_id,
+          o.order_number,
+          o.created_at,
+          o.status,
+          o.payment_status,
+          o.total_amount,
+          u.username,
+          u.email,
+          o.shipping_address->>'first_name' || ' ' || o.shipping_address->>'last_name' as customer_name,
+          o.shipping_address->>'address_line1' as shipping_address_line1,
+          o.shipping_address->>'city' as shipping_city,
+          o.shipping_address->>'country' as shipping_country,
+          (SELECT COUNT(*) FROM order_items WHERE order_id = o.order_id) as item_count
+        FROM orders o
+        LEFT JOIN users u ON o.user_id = u.user_id
+        ${whereClause}
+        ORDER BY o.created_at DESC
+      `;
+      
+      const result = await db.query(query, params);
+      return result.rows;
+    } catch (error) {
+      logger.error('Error exporting orders data', { error: error.message });
+      throw new DatabaseError('Failed to export orders data');
+    }
+  }
+};
+
+/**
+ * Helper function to update order totals after item changes
+ * @param {string} orderId - Order ID
+ * @returns {Promise<void>}
+ */
+async function updateOrderTotals(orderId) {
+  try {
+    const updateQuery = `
+      UPDATE orders o
+      SET
+        subtotal = subquery.subtotal,
+        total_amount = subquery.subtotal + o.tax_amount + o.shipping_amount - o.discount_amount,
+        updated_at = CURRENT_TIMESTAMP
+      FROM (
+        SELECT 
+          order_id,
+          SUM(quantity * unit_price) as subtotal
+        FROM order_items
+        WHERE order_id = $1
+        GROUP BY order_id
+      ) as subquery
+      WHERE o.order_id = subquery.order_id
+    `;
+    
+    await db.query(updateQuery, [orderId]);
+  } catch (error) {
+    logger.error('Error updating order totals', { error: error.message, orderId });
+    throw new DatabaseError('Failed to update order totals');
   }
 };
 
