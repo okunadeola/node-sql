@@ -228,7 +228,7 @@ exports.schemas = {
       brand: Joi.string().allow('', null),
       min_price: Joi.number().min(0),
       max_price: Joi.number().greater(Joi.ref('min_price')),
-      sort_by: Joi.string().valid('price_asc', 'price_desc', 'newest', 'oldest', 'name_asc', 'name_desc'),
+      sort_by: Joi.string().valid('price_asc', 'price_desc', 'newest', 'oldest', 'name_asc', 'name_desc', 'featured', 'rating').default('created_at_desc'),
       page: Joi.number().integer().min(1).default(1),
       limit: Joi.number().integer().min(1).max(100).default(20),
       include_out_of_stock: Joi.boolean().default(false)
@@ -289,33 +289,120 @@ exports.schemas = {
       provider_response: Joi.object().allow(null)
     }),
     // Refund request validation
-  refund: Joi.object({
-    amount: Joi.number().positive().precision(2).required(),
-    reason: Joi.string().max(500).required(),
-    items: Joi.array().items(
-      Joi.object({
-        order_item_id: Joi.string().uuid().required(),
-        quantity: Joi.number().integer().min(1).required()
-      })
-    ),
-    refund_shipping: Joi.boolean().default(false)
-  }),
+    refund: Joi.object({
+      amount: Joi.number().positive().precision(2).required(),
+      reason: Joi.string().max(500).required(),
+      items: Joi.array().items(
+        Joi.object({
+          order_item_id: Joi.string().uuid().required(),
+          quantity: Joi.number().integer().min(1).required()
+        })
+      ),
+      refund_shipping: Joi.boolean().default(false)
+    }),
 
-  // Order item update validation
-  orderItem: Joi.object({
-    quantity: Joi.number().integer().min(0).required(),
-    price: Joi.number().precision(2).min(0),
-    notes: Joi.string().max(500).allow('', null)
-  }),
+    // Order item update validation
+    orderItem: Joi.object({
+      quantity: Joi.number().integer().min(0).required(),
+      price: Joi.number().precision(2).min(0),
+      notes: Joi.string().max(500).allow('', null)
+    }),
 
-  // Order history entry validation
-  orderHistory: Joi.object({
-    status: Joi.string().valid(
-      'pending', 'processing', 'on_hold', 'completed', 
-      'cancelled', 'refunded', 'failed', 'shipped', 'delivered'
-    ).required(),
-    comment: Joi.string().max(500).required()
-  }),
+    // Order history entry validation
+    orderHistory: Joi.object({
+      status: Joi.string().valid(
+        'pending', 'processing', 'on_hold', 'completed', 
+        'cancelled', 'refunded', 'failed', 'shipped', 'delivered'
+      ).required(),
+      comment: Joi.string().max(500).required()
+    }),
+  },
+
+  // Analytics validation schemes
+  analytics: {
+   dateRange : Joi.object({
+      start_date: Joi.date()
+        .iso()
+        .max('now')
+        .required()
+        .messages({
+          'date.base': 'Start date must be a valid date',
+          'date.iso': 'Start date must be in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss)',
+          'date.max': 'Start date cannot be in the future',
+          'any.required': 'Start date is required'
+        }),
+      
+      end_date: Joi.date()
+        .iso()
+        .min(Joi.ref('start_date'))
+        .max('now')
+        .required()
+        .messages({
+          'date.base': 'End date must be a valid date',
+          'date.iso': 'End date must be in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss)',
+          'date.min': 'End date must be after start date',
+          'date.max': 'End date cannot be in the future',
+          'any.required': 'End date is required'
+        }),
+      
+      // Optional parameters for various endpoints
+      limit: Joi.number()
+        .integer()
+        .min(1)
+        .max(1000)
+        .optional()
+        .messages({
+          'number.base': 'Limit must be a number',
+          'number.integer': 'Limit must be an integer',
+          'number.min': 'Limit must be at least 1',
+          'number.max': 'Limit cannot exceed 1000'
+        }),
+      
+      category_id: Joi.string()
+        .uuid()
+        .optional()
+        .messages({
+          'string.base': 'Category ID must be a string',
+          'string.guid': 'Category ID must be a valid UUID'
+        }),
+      
+      product_id: Joi.string()
+        .uuid()
+        .optional()
+        .messages({
+          'string.base': 'Product ID must be a string',
+          'string.guid': 'Product ID must be a valid UUID'
+        }),
+      
+      timeframe: Joi.string()
+        .valid('7 days', '30 days', '90 days', '1 year')
+        .optional()
+        .messages({
+          'any.only': 'Timeframe must be one of: 7 days, 30 days, 90 days, 1 year'
+        }),
+      
+      group_by: Joi.string()
+        .valid('day', 'week', 'month', 'quarter', 'year')
+        .optional()
+        .messages({
+          'any.only': 'Group by must be one of: day, week, month, quarter, year'
+        }),
+      
+      sort_by: Joi.string()
+        .valid('date', 'revenue', 'orders', 'customers', 'quantity')
+        .optional()
+        .messages({
+          'any.only': 'Sort by must be one of: date, revenue, orders, customers, quantity'
+        }),
+      
+      sort_order: Joi.string()
+        .valid('asc', 'desc')
+        .default('desc')
+        .optional()
+        .messages({
+          'any.only': 'Sort order must be either asc or desc'
+        })
+    }),
   },
   
   // Common pagination and sorting schemas
@@ -333,7 +420,38 @@ exports.schemas = {
       start_date: Joi.date().iso(),
       end_date: Joi.date().iso().min(Joi.ref('start_date'))
     })
-  }
+  },
+
+
+   // Product review validation schemas
+  review: {
+    create: Joi.object({
+      rating: Joi.number().integer().min(1).max(5).required(),
+      title: Joi.string().max(255),
+      content: Joi.string().allow('', null)
+    }),
+    
+    update: Joi.object({
+      rating: Joi.number().integer().min(1).max(5),
+      title: Joi.string().max(255),
+      content: Joi.string().allow('', null)
+    }).min(1), // At least one field must be provided
+    
+    // Admin review management
+    moderate: Joi.object({
+      status: Joi.string().valid('pending', 'approved', 'rejected').required()
+    })
+  },
+
+  // Inventory validation schemas
+  inventory: {
+    update: Joi.object({
+      quantity: Joi.number().integer().min(0).required(),
+      warehouse_location: Joi.string().max(100),
+      low_stock_threshold: Joi.number().integer().min(0).default(5),
+      next_restock_date: Joi.date().iso().greater('now')
+    }),
+  },
 };
 
 /**
@@ -354,23 +472,12 @@ exports.wishlist = exports.validate(exports.schemas.user.wishlist);
 exports.apiToken = exports.validate(exports.schemas.user.apiToken);
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 exports.createProduct = exports.validate(exports.schemas.product.create);
 exports.updateProduct = exports.validate(exports.schemas.product.update);
 exports.searchProducts = exports.validate(exports.schemas.product.search, 'query');
+exports.review = exports.validate(exports.schemas.review.create);
+exports.inventory = exports.validate(exports.schemas.review.update);
+
 
 exports.createOrder = exports.validate(exports.schemas.order.create);
 exports.updateOrderStatus = exports.validate(exports.schemas.order.updateStatus);
@@ -381,4 +488,8 @@ exports.refund = exports.validate(exports.schemas.order.refund);
 
 exports.validateUuid = exports.validate(exports.schemas.common.uuid, 'params');
 exports.validatePagination = exports.validate(exports.schemas.common.pagination, 'query');
-exports.validateDateRange = exports.validate(exports.schemas.common.dateRange, 'query');
+exports.dateRange = exports.validate(exports.schemas.common.dateRange, 'query');
+
+
+
+exports.validateDateRange2 = exports.validate(exports.schemas.analytics.dateRange, 'query');

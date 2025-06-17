@@ -26,6 +26,10 @@ pool.on('error', (err) => {
   process.exit(-1);
 });
 
+
+
+
+
 /**
  * Execute SQL query with optional parameters
  * @param {string} text - SQL query text
@@ -35,7 +39,7 @@ pool.on('error', (err) => {
  */
 const query = async (text, params, options = {}) => {
   const start = Date.now();
-  const client = options.client || pool;
+  const client = options.client || pool  //|| (await pool.connect());
   
   try {
     const result = await client.query(text, params);

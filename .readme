@@ -1,0 +1,468 @@
+# E-commerce Database Setup & Migration Guide
+
+## Table of Contents
+
+1. [Database Architecture Overview](#database-architecture-overview)
+2. [Database Connection Setup](#database-connection-setup)
+3. [Schema Components](#schema-components)
+4. [Migration System](#migration-system)
+5. [Getting Started](#getting-started)
+6. [Working with the Database](#working-with-the-database)
+
+## Database Architecture Overview
+
+Your e-commerce application uses a **SQL-first approach** with PostgreSQL, meaning:
+
+- Raw SQL queries instead of ORM
+- Direct control over database operations
+- Optimized performance through custom queries
+- Clear separation between database logic and application logic
+
+### Key Components:
+
+```
+server/src/db/
+├── schema/           # Database structure definitions
+├── queries/          # Organized SQL operations
+├── migrations/       # Database version control
+└── init.js          # Database initialization
+```
+
+## Database Connection Setup
+
+### 1. Environment Configuration
+
+First, create your `.env` file in the server directory:
+
+```env
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=ecommerce_db
+DB_USER=your_username
+DB_PASSWORD=your_password
+
+# Application Configuration
+NODE_ENV=development
+PORT=3000
+JWT_SECRET=your_jwt_secret_here
+```
+
+### 2. Docker PostgreSQL Setup
+
+Since you have PostgreSQL in Docker, ensure it's running:
+
+```bash
+# Check if PostgreSQL container is running
+docker ps
+
+# If not running, start PostgreSQL (example command)
+docker run --name postgres-ecommerce \
+  -e POSTGRES_DB=ecommerce_db \
+  -e POSTGRES_USER=your_username \
+  -e POSTGRES_PASSWORD=your_password \
+  -p 5432:5432 \
+  -d postgres:16
+```
+
+### 3. Connection Pool (db.js)
+
+The connection pool manages database connections efficiently:
+
+```javascript
+// server/src/config/db.js
+const pool = new Pool({
+  user: dbConfig.user,
+  host: dbConfig.host,
+  database: dbConfig.database,
+  password: dbConfig.password,
+  port: dbConfig.port,
+  max: 20, // Maximum connections
+  idleTimeoutMillis: 30000, // Connection timeout
+  connectionTimeoutMillis: 2000,
+});
+```
+
+**Why Connection Pooling?**
+
+- Reuses database connections
+- Prevents connection exhaustion
+- Improves performance
+- Handles concurrent requests efficiently
+
+## Schema Components
+
+### 1. Tables (tables.sql)
+
+Defines the database structure with 24 interconnected tables:
+
+**Core Entities:**
+
+- `users` - Customer and admin accounts
+- `products` - Product catalog
+- `categories` - Product organization
+- `orders` - Purchase transactions
+- `inventory` - Stock management
+
+**Key Features:**
+
+- UUID primary keys for better distributed systems
+- JSONB for flexible data (addresses, attributes)
+- Proper foreign key relationships
+- Check constraints for data integrity
+- Audit fields (created_at, updated_at)
+
+### 2. Indexes (indexes.sql)
+
+Optimizes query performance:
+
+```sql
+-- Example indexes for common queries
+CREATE INDEX idx_products_price_active_category
+ON products(price, is_active, category_id);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+```
+
+**Why Indexes?**
+
+- Speed up SELECT queries
+- Optimize JOIN operations
+- Enable efficient sorting and filtering
+- Critical for e-commerce search and filtering
+
+### 3. Constraints (constraints.sql)
+
+Ensures data integrity:
+
+```sql
+-- Example constraints
+ALTER TABLE products
+ADD CONSTRAINT check_positive_price
+CHECK (price >= 0);
+
+ALTER TABLE inventory
+ADD CONSTRAINT check_quantity_not_negative
+CHECK (quantity >= 0);
+```
+
+## Migration System
+
+### What are Migrations?
+
+Migrations are version control for your database schema. They allow you to:
+
+- Track database changes over time
+- Apply changes consistently across environments
+- Roll back problematic changes
+- Collaborate with team members safely
+
+### Migration Workflow
+
+#### 1. Initial Setup
+
+```bash
+# Navigate to your project
+cd server
+
+# Install dependencies
+npm install
+
+# Initialize the database
+node scripts/db-cli.js init
+```
+
+#### 2. Creating Migrations
+
+```bash
+# Create a new migration
+node scripts/db-cli.js create-migration "add_product_reviews_table"
+
+# This creates: migrations/20231122_add_product_reviews_table.sql
+```
+
+#### 3. Migration File Structure
+
+```sql
+-- Migration: add_product_reviews_table
+-- Created: 2023-11-22T10:30:00.000Z
+
+CREATE TABLE product_reviews (
+    review_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(product_id),
+    user_id UUID NOT NULL REFERENCES users(user_id),
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    content TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_product_reviews_product_id ON product_reviews(product_id);
+CREATE INDEX idx_product_reviews_rating ON product_reviews(rating);
+```
+
+#### 4. Running Migrations
+
+```bash
+# Apply all pending migrations
+node scripts/db-cli.js migrate
+
+# Check migration status
+node scripts/db-cli.js status
+```
+
+### Migration Best Practices
+
+1. **Always Create Migrations for Schema Changes**
+
+   - Never modify tables directly in production
+   - Use migrations for all structural changes
+
+2. **Make Migrations Atomic**
+
+   - Each migration should be a complete, reversible unit
+   - Test thoroughly before applying to production
+
+3. **Naming Convention**
+
+   ```
+   YYYYMMDD_HHMMSS_descriptive_name.sql
+   20231122_103000_add_product_reviews.sql
+   ```
+
+4. **Include Both Forward and Backward Changes**
+
+   ```sql
+   -- Forward migration
+   ALTER TABLE products ADD COLUMN tags JSONB;
+
+   -- Consider rollback strategy
+   -- ALTER TABLE products DROP COLUMN tags;
+   ```
+
+## Getting Started
+
+### Step 1: Database Connection Test
+
+Create a simple connection test file:
+
+```javascript
+// test-connection.js
+const db = require("./src/config/db");
+
+async function testConnection() {
+  try {
+    const result = await db.query("SELECT NOW() as current_time");
+    console.log("✅ Database connected successfully!");
+    console.log("Current time:", result.rows[0].current_time);
+    process.exit(0);
+  } catch (error) {
+    console.error("❌ Database connection failed:", error.message);
+    process.exit(1);
+  }
+}
+
+testConnection();
+```
+
+Run: `node test-connection.js`
+
+### Step 2: Initialize Database Schema
+
+```bash
+# This will create all tables, indexes, and constraints
+node scripts/db-cli.js init
+```
+
+### Step 3: Verify Schema in GUI Tools
+
+**Using Postico 2:**
+
+1. Open Postico 2
+2. Create new connection with your Docker PostgreSQL credentials
+3. Browse tables to verify schema
+
+**Using TablePlus:**
+
+1. Create new PostgreSQL connection
+2. Connect to your Docker instance
+3. Explore the database structure
+
+### Step 4: Seed Some Test Data
+
+```javascript
+// scripts/seed-data.js
+const db = require("../src/config/db");
+
+async function seedData() {
+  try {
+    // Create test user
+    await db.query(
+      `
+      INSERT INTO users (username, email, password_hash, first_name, last_name)
+      VALUES ($1, $2, $3, $4, $5)
+    `,
+      ["testuser", "test@example.com", "hashed_password", "Test", "User"]
+    );
+
+    console.log("✅ Test data seeded successfully!");
+  } catch (error) {
+    console.error("❌ Seeding failed:", error.message);
+  }
+}
+
+seedData();
+```
+
+## Working with the Database
+
+### Query Organization
+
+Your queries are organized by domain:
+
+```
+db/queries/
+├── users.js      # User operations (login, registration, profile)
+├── products.js   # Product catalog (list, search, details)
+├── orders.js     # Order management (create, update, history)
+├── analytics.js  # Business intelligence queries
+└── search.js     # Advanced search functionality
+```
+
+### Example Query Usage
+
+```javascript
+// In a controller
+const productQueries = require("../db/queries/products");
+
+exports.getProducts = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, category, priceMin, priceMax } = req.query;
+
+    const products = await productQueries.getProducts({
+      page: parseInt(page),
+      limit: parseInt(limit),
+      filters: {
+        category,
+        priceRange: { min: priceMin, max: priceMax },
+      },
+    });
+
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+```
+
+### Transaction Management
+
+For complex operations (like placing an order):
+
+```javascript
+const db = require("../config/db");
+
+async function createOrder(orderData) {
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Create order
+    const orderResult = await client.query(
+      "INSERT INTO orders (...) VALUES (...) RETURNING *",
+      orderParams
+    );
+
+    // Update inventory
+    await client.query(
+      "UPDATE inventory SET quantity = quantity - $1 WHERE product_id = $2",
+      [quantity, productId]
+    );
+
+    await client.query("COMMIT");
+    return orderResult.rows[0];
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+```
+
+## Common Development Workflow
+
+### 1. Making Schema Changes
+
+```bash
+# 1. Create migration for new feature
+node scripts/db-cli.js create-migration "add_product_ratings"
+
+# 2. Edit the migration file
+# 3. Test the migration
+node scripts/db-cli.js migrate
+
+# 4. Update your queries if needed
+# 5. Test your application
+```
+
+### 2. Debugging Queries
+
+Enable query logging in development:
+
+```javascript
+// In your .env
+NODE_ENV = development;
+
+// This will log all SQL queries with execution time
+```
+
+### 3. Performance Monitoring
+
+```javascript
+// Check slow queries
+const result = await db.query(`
+  SELECT query, mean_time, calls 
+  FROM pg_stat_statements 
+  WHERE mean_time > 100 
+  ORDER BY mean_time DESC
+`);
+```
+
+## Troubleshooting
+
+### Common Issues:
+
+1. **Connection Refused**
+
+   - Ensure PostgreSQL Docker container is running
+   - Check port mapping (5432:5432)
+   - Verify credentials in .env
+
+2. **Migration Errors**
+
+   - Check SQL syntax in migration files
+   - Ensure dependencies exist (referenced tables)
+   - Review constraint violations
+
+3. **Query Performance**
+   - Add appropriate indexes
+   - Use EXPLAIN ANALYZE to debug slow queries
+   - Monitor connection pool usage
+
+### Useful Commands:
+
+```sql
+-- Check database size
+SELECT pg_size_pretty(pg_database_size('ecommerce_db'));
+
+-- View active connections
+SELECT * FROM pg_stat_activity;
+
+-- Check index usage
+SELECT schemaname, tablename, indexname, idx_scan
+FROM pg_stat_user_indexes;
+```
+
+This setup gives you full control over your database while maintaining clean separation of concerns and ensuring data integrity through proper schema design and migration management.

@@ -75,20 +75,21 @@ exports.protect = async (req, res, next) => {
     if (!token) {
       throw new AuthenticationError('You are not logged in. Please log in to get access.', 401, 'AUTH_REQUIRED');
     }
-
     // 2) Verify token
-    const decoded = await promisify(jwt.verify)(token, JWT_SECRET);
+    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
+
+    console.log(decoded)
 
     // 3) Check if user still exists
-    const currentUser = await userQueries.getUserById(decoded.id);
+    const currentUser = await userQueries.getUserById(decoded.userId);
     if (!currentUser) {
       throw new AuthenticationError('The user associated with this token no longer exists.', 401, 'INVALID_TOKEN');
     }
 
     // 4) Check if user changed password after token was issued
-    if (currentUser.password_changed_at && decoded.iat < parseInt(currentUser.password_changed_at.getTime() / 1000, 10)) {
-      throw new AuthenticationError('User recently changed password. Please log in again.', 401, 'PASSWORD_CHANGED');
-    }
+    // if (currentUser.password_changed_at && decoded.iat < parseInt(currentUser.password_changed_at.getTime() / 1000, 10)) {
+    //   throw new AuthenticationError('User recently changed password. Please log in again.', 401, 'PASSWORD_CHANGED');
+    // }
 
     // 5) Check if account is active
     if (currentUser.account_status !== 'active') {
@@ -143,7 +144,7 @@ exports.verifyApiToken = async (req, res, next) => {
     }
 
     // 2) Check if API token exists and is valid
-    const tokenData = await userQueries.getApiToken(apiToken);
+    const tokenData = await userQueries.getApiTokensByToken(apiToken);
     if (!tokenData) {
       throw new AuthenticationError('Invalid API key', 401, 'INVALID_API_KEY');
     }
@@ -160,7 +161,7 @@ exports.verifyApiToken = async (req, res, next) => {
     }
 
     // 5) Update last used timestamp
-    await userQueries.updateApiTokenUsage(tokenData.token_id);
+    // await userQueries.updateApiTokenUsage(tokenData.token_id);
 
     // 6) Add user and token permissions to request
     req.user = user;

@@ -7,8 +7,9 @@
 
 const { program } = require('commander');
 const { initializeDatabase } = require('../src/ecommerce/db/init');
-const { runMigrations, revertMigration, createMigration } = require('../src/ecommerce/db/migrations/migrationManager');
+const { runMigrations, rollbackLastMigration, createMigration, getMigrationStatus } = require('../src/ecommerce/db/migrations/migration-manager');
 const logger = require('../src/ecommerce/utils/logger');
+const db = require('../src/ecommerce/config/db');
 
 // Configure commander
 program
@@ -22,7 +23,7 @@ program
   .action(async () => {
     try {
       logger.info('Initializing database schema...');
-      await initializeDatabase();
+      await initializeDatabase(true);
       logger.info('Database schema initialized successfully!');
     } catch (error) {
       logger.error('Failed to initialize database schema:', error);
@@ -54,7 +55,7 @@ program
   .action(async (options) => {
     try {
       logger.info('Reverting migration...');
-      await revertMigration(options.to);
+      await rollbackLastMigration(options.to);
       logger.info('Migration reverted successfully!');
     } catch (error) {
       logger.error('Failed to revert migration:', error);
@@ -89,8 +90,10 @@ program
     }
     
     try {
-      const db = require('../src/config/db');
-      const client = await db.pool.connect();
+
+     const client = await db.pool.connect();
+
+
       
       logger.info('Resetting database...');
       
@@ -116,6 +119,48 @@ program
       process.exit(1);
     }
   });
+
+
+
+// Check database status (for development only)
+program
+  .command('migration-status')
+  .description('Show migration status')
+  .action(async () => {
+    try {
+      const status = await getMigrationStatus();
+      
+      console.log('\n📊 Migration Status:');
+      console.log(`Total migrations: ${status.total}`);
+      console.log(`Applied: ${status.applied}`);
+      console.log(`Pending: ${status.pending}`);
+      
+      if (status.appliedMigrations.length > 0) {
+        console.log('\n✅ Applied migrations:');
+        status.appliedMigrations.forEach(migration => {
+          console.log(`  - ${migration}`);
+        });
+      }
+      
+      if (status.pendingMigrations.length > 0) {
+        console.log('\n⏳ Pending migrations:');
+        status.pendingMigrations.forEach(migration => {
+          console.log(`  - ${migration}`);
+        });
+      }
+      
+      logger.info('Database reset completed successfully!');
+    } catch (error) {
+      logger.error('Failed to reset database:', error);
+      process.exit(1);
+    }
+  });
+
+
+
+
+
+
 
 // Parse command line arguments
 program.parse(process.argv);

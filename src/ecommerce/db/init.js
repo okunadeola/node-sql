@@ -7,10 +7,8 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const logger = require('../utils/logger');
-const config = require('../config/db');
-
-// Initialize database connection
-const pool = new Pool(config.pgConfig);
+// const config = require('../config/db');
+const db = require('../config/db');
 
 /**
  * Execute SQL file contents
@@ -18,6 +16,8 @@ const pool = new Pool(config.pgConfig);
  * @returns {Promise<void>}
  */
 async function executeSqlFile(filePath) {
+  let client; // Declare client at function scope
+  
   try {
     const sql = fs.readFileSync(filePath, 'utf8');
     logger.info(`Executing SQL file: ${path.basename(filePath)}`);
@@ -27,11 +27,9 @@ async function executeSqlFile(filePath) {
     // a more sophisticated parser might be needed
     const statements = sql.split(';').filter(stmt => stmt.trim().length > 0).map(stmt => stmt + ';');
     
-    // Get a client from the pool
-    const client = await pool.connect();
-    
     try {
       // Start a transaction
+      client = await db.pool.connect(); // Assign to the function-scoped variable
       await client.query('BEGIN');
       
       // Execute each statement
@@ -46,12 +44,16 @@ async function executeSqlFile(filePath) {
       logger.info(`Successfully executed ${path.basename(filePath)}`);
     } catch (error) {
       // Roll back the transaction on error
-      await client.query('ROLLBACK');
+      if (client) {
+        await client.query('ROLLBACK');
+      }
       logger.error(`Error executing ${path.basename(filePath)}:`, error);
       throw error;
     } finally {
       // Release the client back to the pool
-      client.release();
+      if (client) {
+        client.release();
+      }
     }
   } catch (error) {
     logger.error(`Failed to execute SQL file ${filePath}:`, error);
@@ -62,11 +64,16 @@ async function executeSqlFile(filePath) {
 /**
  * Initialize the database schema
  */
-async function initializeDatabase() {
+async function initializeDatabase(cleanStart = false) {
   const schemaDir = path.join(__dirname, 'schema');
   
   try {
     logger.info('Starting database initialization...');
+
+    // Option 1: Clean start - drop everything first
+    if (cleanStart) {
+      await dropAllTables();
+    }
     
     // Execute schema files in specific order
     // 1. First create tables
@@ -87,9 +94,75 @@ async function initializeDatabase() {
     throw error;
   } finally {
     // Close the pool
-    await pool.end();
+    await db.pool.end();
   }
 }
+
+
+
+async function dropAllTables() {
+  let client;
+  
+  try {
+    client = await db.pool.connect();
+    logger.info('Dropping all existing tables and functions...');
+    
+    // Get all table names in the current schema
+    const tablesResult = await client.query(`
+      SELECT tablename 
+      FROM pg_tables 
+      WHERE schemaname = 'public'
+    `);
+    
+    // Drop all tables with CASCADE to handle foreign keys
+    for (const row of tablesResult.rows) {
+      const tableName = row.tablename;
+      await client.query(`DROP TABLE IF EXISTS "${tableName}" CASCADE`);
+      logger.info(`Dropped table: ${tableName}`);
+    }
+    
+    // Get all functions and procedures
+    const functionsResult = await client.query(`
+      SELECT proname, prokind
+      FROM pg_proc p
+      JOIN pg_namespace n ON p.pronamespace = n.oid
+      WHERE n.nspname = 'public'
+      AND prokind IN ('f', 'p')
+    `);
+    
+    // Drop all functions and procedures
+    for (const row of functionsResult.rows) {
+      const funcName = row.proname;
+      const funcType = row.prokind === 'f' ? 'FUNCTION' : 'PROCEDURE';
+      await client.query(`DROP ${funcType} IF EXISTS "${funcName}" CASCADE`);
+      logger.info(`Dropped ${funcType.toLowerCase()}: ${funcName}`);
+    }
+    
+    // Drop all sequences that might be orphaned
+    const sequencesResult = await client.query(`
+      SELECT sequencename 
+      FROM pg_sequences 
+      WHERE schemaname = 'public'
+    `);
+    
+    for (const row of sequencesResult.rows) {
+      const seqName = row.sequencename;
+      await client.query(`DROP SEQUENCE IF EXISTS "${seqName}" CASCADE`);
+      logger.info(`Dropped sequence: ${seqName}`);
+    }
+    
+    logger.info('Successfully dropped all existing database objects');
+    
+  } catch (error) {
+    logger.error('Error dropping database objects:', error);
+    throw error;
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+}
+
 
 // Execute if this script is run directly
 if (require.main === module) {

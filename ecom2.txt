@@ -3,6 +3,8 @@
 ecommerce-app/
 │
 ├── server/
+│   ├── scripts/
+│   │   └──db-cli.js
 │   ├── src/
 │   │   ├── config/
 │   │   │   ├── db.js           # Database connection
@@ -24,7 +26,8 @@ ecommerce-app/
 │   │   │   └── migrations/     # Database migrations
 │   │   │       ├── 001_initial_setup.sql
 │   │   │       ├── 002_add_indexes.sql
-│   │   │       └── 003_add_constraints.sql
+│   │   │       ├── 003_add_constraints.sql
+│   │   │       └── migration-manager.js
 │   │   │
 │   │   ├── controllers/        # Request handlers
 │   │   │   ├── userController.js
@@ -478,87 +481,6 @@ CREATE INDEX idx_product_images_is_primary ON product_images(is_primary);
  */
 class SqlBuilder {
   /**
-   * Create a WHERE clause from filter conditions
-   * @param {Object} filters - Key-value pairs of filter conditions
-   * @param {number} [startParamIndex=1] - Starting index for parameterized queries
-   * @returns {Object} Object containing where clause and parameters
-   */
-  static buildWhereClause(filters, startParamIndex = 1) {
-    if (!filters || Object.keys(filters).length === 0) {
-      return { whereClause: '', params: [] };
-    }
-
-    const conditions = [];
-    const params = [];
-    let paramIndex = startParamIndex;
-
-    for (const [key, value] of Object.entries(filters)) {
-      // Skip null or undefined values
-      if (value === null || value === undefined) continue;
-
-      // Handle special operators like IN, BETWEEN, etc.
-      if (typeof value === 'object' && !Array.isArray(value)) {
-        const { operator, value: operatorValue } = value;
-        
-        if (operator && operatorValue !== null && operatorValue !== undefined) {
-          switch (operator.toUpperCase()) {
-            case 'IN':
-              if (Array.isArray(operatorValue) && operatorValue.length > 0) {
-                const placeholders = operatorValue.map(() => `$${paramIndex++}`).join(', ');
-                conditions.push(`${key} IN (${placeholders})`);
-                params.push(...operatorValue);
-              }
-              break;
-            case 'BETWEEN':
-              if (Array.isArray(operatorValue) && operatorValue.length === 2) {
-                conditions.push(`${key} BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
-                params.push(operatorValue[0], operatorValue[1]);
-                paramIndex += 2;
-              }
-              break;
-            case 'LIKE':
-            case 'ILIKE':
-              conditions.push(`${key} ${operator} $${paramIndex++}`);
-              params.push(`%${operatorValue}%`);
-              break;
-            case '>':
-            case '>=':
-            case '<':
-            case '<=':
-            case '!=':
-              conditions.push(`${key} ${operator} $${paramIndex++}`);
-              params.push(operatorValue);
-              break;
-            case 'IS NULL':
-              conditions.push(`${key} IS NULL`);
-              break;
-            case 'IS NOT NULL':
-              conditions.push(`${key} IS NOT NULL`);
-              break;
-            default:
-              conditions.push(`${key} = $${paramIndex++}`);
-              params.push(operatorValue);
-          }
-        }
-      } else if (Array.isArray(value)) {
-        // Handle array values as IN conditions
-        if (value.length > 0) {
-          const placeholders = value.map(() => `$${paramIndex++}`).join(', ');
-          conditions.push(`${key} IN (${placeholders})`);
-          params.push(...value);
-        }
-      } else {
-        // Handle simple equality
-        conditions.push(`${key} = $${paramIndex++}`);
-        params.push(value);
-      }
-    }
-
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    return { whereClause, params };
-  }
-
-  /**
    * Build ORDER BY clause from sort parameters
    * @param {Object|Array|string} sort - Sort configuration
    * @param {string} defaultSort - Default sort field and direction
@@ -664,41 +586,6 @@ class SqlBuilder {
   }
 
   /**
-   * Build a SELECT query
-   * @param {string} table - Table name
-   * @param {Array} columns - Columns to select
-   * @param {Object} filters - Filter conditions
-   * @param {Object} options - Additional options (sort, pagination)
-   * @returns {Object} SQL query and parameters
-   */
-  static buildSelectQuery(table, columns = ['*'], filters = {}, options = {}) {
-    const columnsStr = Array.isArray(columns) ? columns.join(', ') : columns;
-    const { whereClause, params } = this.buildWhereClause(filters);
-    
-    const orderBy = options.sort
-      ? this.buildOrderByClause(options.sort)
-      : '';
-    
-    const pagination = options.pagination
-      ? this.buildPaginationClause(options.pagination.page, options.pagination.limit)
-      : { limitClause: '' };
-    
-    const query = `
-      SELECT ${columnsStr}
-      FROM ${table}
-      ${whereClause}
-      ${orderBy}
-      ${pagination.limitClause}
-    `;
-    
-    return { 
-      query, 
-      params, 
-      pagination: options.pagination ? pagination : null 
-    };
-  }
-
-  /**
    * Build a query for fetching total count (for pagination)
    * @param {string} table - Table name
    * @param {Object} filters - Filter conditions
@@ -714,89 +601,6 @@ class SqlBuilder {
     `;
     
     return { query, params };
-  }
-
-  /**
-   * Generate a dynamically parameterized IN clause
-   * @param {Array} items - Array of items for the IN clause
-   * @param {number} startIndex - Starting parameter index
-   * @returns {Object} parameterized IN clause and updated index
-   */
-  static generateInClause(items, startIndex = 1) {
-    if (!items || items.length === 0) {
-      return { inClause: '(NULL)', params: [], nextIndex: startIndex };
-    }
-
-    const placeholders = [];
-    const params = [];
-    let paramIndex = startIndex;
-
-    for (const item of items) {
-      placeholders.push(`$${paramIndex++}`);
-      params.push(item);
-    }
-
-    return {
-      inClause: `(${placeholders.join(', ')})`,
-      params,
-      nextIndex: paramIndex
-    };
-  }
-
-  /**
-   * Generate a dynamically parameterized VALUES clause for multi-row insert
-   * @param {Array} items - Array of objects to insert
-   * @param {Array} columns - Column names
-   * @returns {Object} parameterized VALUES clause and parameters
-   */
-  static generateBulkInsertClause(items, columns) {
-    if (!items || items.length === 0 || !columns || columns.length === 0) {
-      return { valuesClause: '', params: [] };
-    }
-
-    const params = [];
-    let paramIndex = 1;
-    const valueRows = [];
-
-    for (const item of items) {
-      const rowPlaceholders = [];
-      for (const column of columns) {
-        rowPlaceholders.push(`$${paramIndex++}`);
-        params.push(item[column] ?? null);
-      }
-      valueRows.push(`(${rowPlaceholders.join(', ')})`);
-    }
-
-    return {
-      valuesClause: valueRows.join(',\n'),
-      params
-    };
-  }
-
-  /**
-   * Build JSON/JSONB query conditions
-   * @param {string} column - JSON column name
-   * @param {string} path - JSON path
-   * @param {*} value - Value to compare against
-   * @param {string} [operator='='] - Comparison operator
-   * @returns {Object} SQL fragment and value
-   */
-  static jsonCondition(column, path, value, operator = '=') {
-    // For PostgreSQL JSONB operations
-    const pathParts = path.split('.');
-    let sqlFragment;
-    
-    if (pathParts.length === 1) {
-      // Simple key access
-      sqlFragment = `${column}->>'${pathParts[0]}' ${operator} $%i`;
-    } else {
-      // Nested key access
-      const lastKey = pathParts.pop();
-      const jsonPath = pathParts.map(part => `'${part}'`).join('->');
-      sqlFragment = `${column}->${jsonPath}->>'${lastKey}' ${operator} $%i`;
-    }
-    
-    return { sqlFragment, value };
   }
 }
 
@@ -858,82 +662,7 @@ const productQueries = {
    */
   getTrendingProducts: async ({ timeframe = '7 days', categoryId = null, limit = 10 }) => {
     try {
-      const params = [timeframe];
-      let categoryFilter = '';
       
-      if (categoryId) {
-        categoryFilter = 'AND p.category_id = $2';
-        params.push(categoryId);
-      }
-      
-      params.push(limit);
-      
-      const query = `
-        WITH recent_orders AS (
-          SELECT 
-            oi.product_id,
-            COUNT(*) AS order_count,
-            SUM(oi.quantity) AS total_quantity_ordered
-          FROM 
-            order_items oi
-          JOIN 
-            orders o ON oi.order_id = o.order_id
-          WHERE 
-            o.created_at >= NOW() - $1::INTERVAL
-            AND o.status NOT IN ('cancelled', 'refunded', 'failed')
-          GROUP BY 
-            oi.product_id
-        ),
-        recent_reviews AS (
-          SELECT 
-            product_id,
-            COUNT(*) AS review_count,
-            AVG(rating) AS avg_recent_rating
-          FROM 
-            product_reviews
-          WHERE 
-            created_at >= NOW() - $1::INTERVAL
-            AND status = 'approved'
-          GROUP BY 
-            product_id
-        ),
-        trending_score AS (
-          SELECT 
-            p.product_id,
-            p.name,
-            p.price,
-            p.brand,
-            c.name AS category_name,
-            (
-              SELECT url 
-              FROM product_images 
-              WHERE product_id = p.product_id AND is_primary = TRUE 
-              LIMIT 1
-            ) AS primary_image,
-            COALESCE(ro.order_count, 0) * 10 +
-            COALESCE(ro.total_quantity_ordered, 0) * 2 +
-            COALESCE(rr.review_count, 0) * 5 +
-            COALESCE(rr.avg_recent_rating, 0) * 3 AS trend_score
-          FROM 
-            products p
-          LEFT JOIN 
-            recent_orders ro ON p.product_id = ro.product_id
-          LEFT JOIN 
-            recent_reviews rr ON p.product_id = rr.product_id
-          LEFT JOIN
-            categories c ON p.category_id = c.category_id
-          WHERE 
-            p.is_active = TRUE
-            ${categoryFilter}
-        )
-        SELECT * FROM trending_score
-        WHERE trend_score > 0
-        ORDER BY trend_score DESC, name
-        LIMIT $${params.length}
-      `;
-      
-      const result = await db.query(query, params);
-      return result.rows;
     } catch (error) {
       logger.error('Error fetching trending products', { error: error.message });
       throw new DatabaseError('Failed to fetch trending products');
@@ -957,162 +686,223 @@ exports.listProducts = async (req, res, next) => {}
 
 
 
-
 /**
- * Validation Middleware
- * Provides request validation using Joi
+ * Database Migration Manager
+ * Handles executing and tracking migrations for the database
  */
-const Joi = require('joi');
-const { ValidationError } = require('../utils/error');
+const fs = require('fs').promises;
+const path = require('path');
+const db = require('../../config/db');
+const logger = require('../../utils/logger');
 
-/**
- * Validate request body, query parameters, or URL parameters
- * @param {Object} schema - Joi validation schema
- * @param {string} source - Request property to validate ('body', 'query', 'params')
- * @returns {Function} Express middleware
- */
-exports.validate = (schema, source = 'body') => {
-  return (req, res, next) => {
-    const data = req[source];
-    const { error, value } = schema.validate(data, {
-      abortEarly: false,
-      stripUnknown: true,
-      errors: { wrap: { label: false } }
-    });
-    
-    if (error) {
-      const errorDetails = error.details.map(detail => ({
-        field: detail.path.join('.'),
-        message: detail.message
-      }));
+class MigrationManager {
+  /**
+   * Initialize the migration manager
+   */
+  async init() {
+    await this._createMigrationsTable();
+  }
+
+  /**
+   * Create the migrations table if it doesn't exist
+   * @private
+   */
+  async _createMigrationsTable() {
+    try {
+      const query = `
+        CREATE TABLE IF NOT EXISTS migrations (
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(255) NOT NULL UNIQUE,
+          applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+      `;
+      await db.query(query);
+      logger.info('Migrations table checked/created');
+    } catch (error) {
+      logger.error('Failed to create migrations table', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Get list of applied migrations
+   * @returns {Promise<Array>} List of applied migration names
+   * @private
+   */
+  async _getAppliedMigrations() {
+    DONE
+  }
+
+  /**
+   * Get list of available migration files
+   * @returns {Promise<Array>} List of available migration file paths
+   * @private
+   */
+  async _getAvailableMigrations() {
+   DONE
+  }
+
+  /**
+   * Record a migration as applied
+   * @param {string} migrationName - Name of the migration file
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _recordMigration(migrationName) {
+   DONE
+  }
+
+  /**
+   * Apply a migration
+   * @param {string} migrationFile - Migration file name
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _applyMigration(migrationFile) {
+    DONE
+  }
+
+  /**
+   * Run pending migrations
+   * @returns {Promise<Array>} List of applied migrations
+   */
+  async runMigrations() {
+   DONE
+  }
+
+  /**
+   * Create a new migration file DONE
+   * @param {string} name - Migration name
+   * @returns {Promise<string>} Path to the created migration file
+   */
+  async createMigration(name) {
+    try {
+      const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+      const fileName = `${timestamp}_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}.sql`;
+      const filePath = path.join(__dirname, 'migrations', fileName);
       
-      return next(new ValidationError('Validation failed', 400, 'VALIDATION_ERROR', errorDetails));
-    }
-    
-    // Replace the request data with the validated value
-    req[source] = value;
-    next();
-  };
-};
+      const template = `-- Migration: ${name}
+-- Created: ${new Date().toISOString()}
 
-/**
- * Common validation schemas
- */
-exports.schemas = {
-  // User validation schemas
-  user: {
-    create: Joi.object({
-      username: Joi.string().alphanum().min(3).max(50).required(),
-      email: Joi.string().email().required(),
-      password: Joi.string().min(8).required(),
-      first_name: Joi.string().max(50),
-      last_name: Joi.string().max(50),
-      phone: Joi.string().max(20),
-      address: Joi.object({
-        address_line1: Joi.string().required(),
-        address_line2: Joi.string().allow('', null),
-        city: Joi.string().required(),
-        state: Joi.string().allow('', null),
-        postal_code: Joi.string().required(),
-        country: Joi.string().required()
-      }),
-      role: Joi.string().valid('customer', 'admin', 'seller').default('customer')
-    }),
+-- Write your SQL here
+
+-- For example:
+-- CREATE TABLE example (id SERIAL PRIMARY KEY, name VARCHAR(100));
+
+-- To roll back:
+-- Consider writing a down migration in a separate file if needed
+`;
+      
+      await fs.writeFile(filePath, template, 'utf8');
+      logger.info('Created migration file', { fileName });
+      
+      return filePath;
+    } catch (error) {
+      logger.error('Failed to create migration file', { error: error.message });
+      throw error;
     }
+  }
 }
-exports.createUser = exports.validate(exports.schemas.user.create);
+
+module.exports = new MigrationManager();
 
 
 
 
 
-/**
- * Order Controller
- * Handles order-related requests and processing
+/**  DONE
+ * Database Command Line Tool
+ * Provides commands to initialize, migrate, seed, and reset the database
  */
-const orderQueries = require('../db/queries/orders');
-const productQueries = require('../db/queries/products');
-const inventoryQueries = require('../db/queries/inventory');
-const { BadRequestError, NotFoundError, ConflictError, AuthorizationError } = require('../utils/error');
+
+snippet
+
+const { program } = require('commander');
+const { initializeDatabase } = require('../src/ecommerce/db/init');
+const { runMigrations, revertMigration, createMigration } = require('../src/ecommerce/db/migrations/migrationManager');
+const logger = require('../src/ecommerce/utils/logger');
+
+// Configure commander
+program
+  .version('1.0.0')
+  .description('E-commerce database management tool');
+
+// Initialize database command
+program
+  .command('init')
+  .description('Initialize database schema with tables, indexes, and constraints')
+  .action(async () => {
+    try {
+      logger.info('Initializing database schema...');
+      await initializeDatabase();
+      logger.info('Database schema initialized successfully!');
+    } catch (error) {
+      logger.error('Failed to initialize database schema:', error);
+      process.exit(1);
+    }
+  });
+
+
+
+// server/src/config/db.js
+const { Pool } = require('pg');
 const logger = require('../utils/logger');
-const { v4: uuidv4 } = require('uuid');
-const { generateOrderNumber } = require('../utils/orderHelpers');
-const { createCsvStringifier } = require('csv-writer');
+const { db: dbConfig } = require('./environment');
+
+// Create PostgreSQL connection pool
+const pool = new Pool({
+  user: dbConfig.user,
+  host: dbConfig.host,
+  database: dbConfig.database,
+  password: dbConfig.password,
+  port: dbConfig.port,
+  // Connection pool settings
+  max: 20, // Maximum number of clients in the pool
+  idleTimeoutMillis: 30000, // How long a client is allowed to remain idle before being closed
+  connectionTimeoutMillis: 2000, // How long to wait for a connection
+});
+
+// Test the connection
+pool.on('connect', () => {
+  logger.info('Connected to PostgreSQL database');
+});
+
+pool.on('error', (err) => {
+  logger.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
 
 /**
- * Get all orders (admin/seller)
+ * Execute SQL query with optional parameters
+ * @param {string} text - SQL query text
+ * @param {Array} params - Query parameters
+ * @param {Object} options - Additional options (transaction client, etc.)
+ * @returns {Promise<Object>} Query result
  */
-exports.getAllOrders = async (req, res, next) => {
+const query = async (text, params, options = {}) => {
+  const start = Date.now();
+  const client = options.client || pool;
+  
   try {
-    const {
-      page = 1,
-      limit = 20,
-      status,
-      fromDate,
-      toDate,
-      customerId,
-      minAmount,
-      maxAmount,
-      sortBy = 'created_at',
-      sortOrder = 'DESC'
-    } = req.query;
+    const result = await client.query(text, params);
+    const duration = Date.now() - start;
     
-    // Convert string values to appropriate types
-    const options = {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      status,
-      fromDate: fromDate ? new Date(fromDate) : undefined,
-      toDate: toDate ? new Date(toDate) : undefined,
-      customerId,
-      minAmount: minAmount ? parseFloat(minAmount) : undefined,
-      maxAmount: maxAmount ? parseFloat(maxAmount) : undefined,
-      sortBy,
-      sortOrder: sortOrder.toUpperCase()
-    };
-    
-    const result = await orderQueries.getAllOrders(options);
-    
-    res.status(200).json({
-      success: true,
-      data: result.orders,
-      pagination: result.pagination
+    // Log the query for debugging/performance monitoring
+    logger.debug('Executed query', { 
+      text, 
+      duration, 
+      rows: result.rowCount,
+      // Don't log params in production as they may contain sensitive data
+      ...(process.env.NODE_ENV !== 'production' && { params })
     });
+    
+    return result;
   } catch (error) {
-    next(error);
+    logger.error('Database query error', { 
+      text, 
+      error: error.message,
+      code: error.code
+    });
+    throw error;
   }
 };
-
-/**
- * Get orders for authenticated user
- */
-exports.getMyOrders = async (req, res, next) => {
-  try {
-    const userId = req.user.user_id;
-    const {
-      page = 1,
-      limit = 10,
-      status,
-      fromDate,
-      toDate,
-      sortBy = 'created_at',
-      sortOrder = 'DESC'
-    } = req.query;
-    
-    // Convert string values to appropriate types
-    const options = {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      status,
-      fromDate: fromDate ? new Date(fromDate) : undefined,
-      toDate: toDate ? new Date(toDate) : undefined,
-      sortBy,
-      sortOrder: sortOrder.toUpperCase()
-    };
-    
-    const result = await orderQueries.getOrdersByUser(userId, options);
-    
-    res    CONTINUE
-  }
-
-}

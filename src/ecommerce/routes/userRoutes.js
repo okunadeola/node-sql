@@ -6,21 +6,32 @@ const router = express.Router();
 const userController = require('../controllers/userController');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validation');
-const rateLimiter = require('../middleware/rateLimiter');
+const {  Redis } = require('ioredis');
+const { RateLimiterRedis } = require('rate-limiter-flexible');
+const logger = require('../utils/logger');
 
 // Stricter rate limiting for authentication endpoints
-const authRateLimiter = rateLimiter({
-  maxRequests: 5,
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  keyPrefix: 'auth_api'
+//DDos protection and rate limiting
+const redisClient = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
+
+const rateLimiter = new RateLimiterRedis({
+  storeClient: redisClient,
+  keyPrefix: "middleware",
+  points: 10, // 10 attempts
+  duration: 5 * 60, // 5 minutes
 });
 
-// Standard rate limiting for other user endpoints
-router.use(rateLimiter({
-  maxRequests: 60,
-  windowMs: 60 * 1000, // 1 minute
-  keyPrefix: 'user_api'
-}));
+const authRateLimiter =((req, res, next) => {
+  rateLimiter
+    .consume(req.ip)
+    .then(() => next())
+    .catch(() => {
+      logger.warn(`Rate limit exceeded for IP: ${req.ip}`);
+      res.status(429).json({ success: false, message: "Too many requests" });
+    });
+});
+
+
 
 // Authentication routes
 router.post('/register', authRateLimiter, validate.createUser, userController.register);
@@ -32,7 +43,7 @@ router.post('/reset-password', authRateLimiter, validate.resetPassword, userCont
 
 // User profile routes - require authentication
 router.get('/profile', auth.protect, userController.getUserProfile);
-router.put('/profile', auth.protect, validate.userProfile, userController.updateUserProfile);
+router.put('/update-profile', auth.protect, validate.userProfile, userController.updateUserProfile);
 router.put('/password', auth.protect, validate.changePassword, userController.changePassword);
 
 // Address management
@@ -51,16 +62,17 @@ router.post('/wishlists/:wishlistId/products/:productId', auth.protect, userCont
 router.delete('/wishlists/:wishlistId/products/:productId', auth.protect, userController.removeProductFromWishlist);
 
 // Admin user management routes
-router.get('/', auth.protect, auth.requireRole('admin'), userController.getAllUsers);
+// auth.protect, auth.requireRole('admin'),
+router.get('/', authRateLimiter, userController.getAllUsers);
 router.get('/:userId', auth.protect, auth.requireRole('admin'), userController.getUserById);
 router.put('/:userId', auth.protect, auth.requireRole('admin'), validate.userAdmin, userController.updateUser);
 router.put('/:userId/status', auth.protect, auth.requireRole('admin'), validate.userStatus, userController.updateUserStatus);
 router.delete('/:userId', auth.protect, auth.requireRole('admin'), userController.deleteUser);
 
 // API token management
-router.get('/tokens', auth.protect, userController.getApiTokens);
-router.post('/tokens', auth.protect, validate.apiToken, userController.createApiToken);
-router.delete('/tokens/:tokenId', auth.protect, userController.revokeApiToken);
+// router.get('/tokens', auth.protect, userController.getApiTokens);
+// router.post('/tokens', auth.protect, validate.apiToken, userController.createApiToken);
+// router.delete('/tokens/:tokenId', auth.protect, userController.revokeApiToken);
 
 // Email verification
 router.post('/verify-email', authRateLimiter, validate.verificationToken, userController.verifyEmail);

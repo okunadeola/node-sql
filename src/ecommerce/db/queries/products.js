@@ -405,11 +405,10 @@ const productQueries = {
   /**
    * Create a new product with inventory and attributes
    * @param {Object} productData - Product information
+   * @param {Object} client - DB client
    * @returns {Promise<Object>} Created product
    */
-  createProduct: async (productData) => {
-    const client = await db.beginTransaction();
-    
+  createProduct: async (productData, client) => {    
     try {
       const {
         name,
@@ -592,11 +591,9 @@ const productQueries = {
         const imagesResult = await client.query(insertImagesQuery, flatImageValues);
         product.images = imagesResult.rows;
       }
-      
-      await db.commitTransaction(client);
+ 
       return product;
     } catch (error) {
-      await db.rollbackTransaction(client);
       logger.error('Error creating product', { error: error.message });
       throw new DatabaseError('Failed to create product', error.message);
     }
@@ -1145,7 +1142,7 @@ const productQueries = {
    * @returns {Promise<Object>} Created product
    */
   createProduct2: async (productData) => {
-    const client = await db.getClient();
+    const client = await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -1186,7 +1183,7 @@ const productQueries = {
    * @returns {Promise<Object>} Updated product
    */
   updateProduct: async (productId, productData) => {
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -1441,7 +1438,7 @@ const productQueries = {
    * @returns {Promise<Array>} Created images
    */
   addProductImages: async (productId, images) => {
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -1608,9 +1605,11 @@ const productQueries = {
    * @returns {Promise<Object>} Updated image information
    */
   setPrimaryImage: async (productId, imageId) => {
+    const client = await db.pool.connect();
+    
     try {
       // Begin transaction
-      await db.query('BEGIN');
+      await client.query('BEGIN');
       
       // First, check if the image exists and belongs to the product
       const checkQuery = `
@@ -1618,10 +1617,10 @@ const productQueries = {
         WHERE image_id = $1 AND product_id = $2
       `;
       
-      const checkResult = await db.query(checkQuery, [imageId, productId]);
+      const checkResult = await client.query(checkQuery, [imageId, productId]);
       
       if (checkResult.rows.length === 0) {
-        await db.query('ROLLBACK');
+        await client.query('ROLLBACK');
         throw new NotFoundError(`Image not found or doesn't belong to the product`);
       }
       
@@ -1632,7 +1631,7 @@ const productQueries = {
         WHERE product_id = $1
       `;
       
-      await db.query(resetQuery, [productId]);
+      await client.query(resetQuery, [productId]);
       
       // Set the selected image as primary
       const updateQuery = `
@@ -1642,21 +1641,23 @@ const productQueries = {
         RETURNING *
       `;
       
-      const result = await db.query(updateQuery, [imageId]);
+      const result = await client.query(updateQuery, [imageId]);
       
       // Commit transaction
-      await db.query('COMMIT');
+      await client.query('COMMIT');
       
       return result.rows[0];
     } catch (error) {
       // Rollback transaction on error
-      await db.query('ROLLBACK');
+      await client.query('ROLLBACK');
       
       if (error instanceof NotFoundError) {
         throw error;
       }
       logger.error('Error setting primary product image', { error: error.message, productId, imageId });
       throw new DatabaseError('Failed to set primary product image');
+    }finally{
+      client.release();
     }
   }  ,
 

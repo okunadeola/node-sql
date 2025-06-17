@@ -15,11 +15,16 @@ require('dotenv').config();
 const logger = require('./ecommerce/utils/logger');
 const routes = require('./ecommerce/routes');
 const errorHandler = require('./ecommerce/middleware/errorHandler');
-const rateLimiter = require('./ecommerce/middleware/rateLimiter');
 const db = require('./ecommerce/config/db');
+const { rateLimit } = require('express-rate-limit');
+const { RedisStore } = require('rate-limit-redis');
+const {  Redis } = require('ioredis');
+
 
 // Create Express app
 const app = express();
+
+const redisClient  = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
 // Set up request ID middleware
 app.use((req, res, next) => {
@@ -62,11 +67,41 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Apply global rate limiter
-app.use(rateLimiter({
-  maxRequests: 300,
-  windowMs: 60 * 1000, // 1 minute
-  keyPrefix: 'global'
-}));
+// app.use(rateLimiter({
+//   maxRequests: 300,
+//   windowMs: 60 * 1000, // 1 minute
+//   keyPrefix: 'global'
+// }));
+
+
+
+//rate limiting
+const ratelimitOptions = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    logger.warn(`Sensitive endpoint rate limit exceeded for IP: ${req.ip}`);
+    res.status(429).json({ success: false, message: "Too many requests" });
+  },
+  store: new RedisStore({
+    sendCommand: (...args) => redisClient.call(...args),
+  }),
+});
+
+app.use(ratelimitOptions);
+
+
+
+
+
+
+
+
+
+
+
 
 // Test database connection
 db.query('SELECT NOW()')
@@ -74,6 +109,7 @@ db.query('SELECT NOW()')
   .catch((err) => logger.error('Database connection failed', { error: err.message }));
 
 // Mount API routes
+
 app.use('/api', routes);
 
 // Handle 404 errors

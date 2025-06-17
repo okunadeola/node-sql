@@ -6,17 +6,12 @@ const router = express.Router();
 const analyticsController = require('../controllers/analyticsController');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validation');
-const rateLimiter = require('../middleware/rateLimiter');
 
-// Apply rate limiter to all analytics routes
-router.use(rateLimiter({
-  maxRequests: 30,
-  windowMs: 60 * 1000, // 1 minute
-  keyPrefix: 'analytics_api'
-}));
+
+
 
 // All analytics routes require authentication and admin/seller role
-router.use(auth.requireAuth);
+router.use(auth.protect);
 router.use(auth.requireRole('admin', 'seller'));
 
 // Sales analytics
@@ -48,13 +43,13 @@ router.get('/carts/conversion-rate', validate.dateRange, analyticsController.get
 
 // Export reports (with stricter rate limit)
 router.get('/export/sales', 
-  rateLimiter({ maxRequests: 5, windowMs: 3600 * 1000 }), // 5 per hour
+  // rateLimiter({ maxRequests: 5, windowMs: 3600 * 1000 }), // 5 per hour
   validate.dateRange, 
   analyticsController.exportSalesReport
 );
 
 router.get('/export/inventory', 
-  rateLimiter({ maxRequests: 5, windowMs: 3600 * 1000 }), // 5 per hour
+  // rateLimiter({ maxRequests: 5, windowMs: 3600 * 1000 }), // 5 per hour
   analyticsController.exportInventoryReport
 );
 

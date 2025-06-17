@@ -7,6 +7,11 @@ CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_users_account_status ON users(account_status);
 CREATE INDEX idx_users_created_at ON users(created_at);
 
+-- Users Tokens Table Indexes
+CREATE INDEX idx_users_tokens_user_id ON user_tokens(user_id);
+CREATE INDEX idx_users_tokens_token ON user_tokens(token);
+CREATE INDEX idx_users_tokens_expires_at ON user_tokens(expires_at);
+
 -- Categories Table Indexes
 CREATE INDEX idx_categories_parent_id ON categories(parent_id);
 CREATE INDEX idx_categories_is_active ON categories(is_active);
@@ -123,5 +128,5 @@ CREATE INDEX idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
 CREATE INDEX idx_products_description_trgm ON products USING GIN (description gin_trgm_ops);
 
 -- Create a GIN index for JSONB fields
-CREATE INDEX idx_product_attributes_jsonb ON product_attributes USING GIN (value jsonb_path_ops) WHERE jsonb_typeof(value) = 'object';
+CREATE INDEX idx_product_attributes_value_text ON product_attributes USING BTREE (value);
 CREATE INDEX idx_order_items_product_data ON order_items USING GIN (product_data);

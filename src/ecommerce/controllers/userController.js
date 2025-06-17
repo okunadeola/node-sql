@@ -9,6 +9,9 @@ const userQueries = require('../db/queries/users');
 const { ValidationError, NotFoundError, AuthenticationError, ConflictError } = require('../utils/error');
 const logger = require('../utils/logger');
 const { generateToken, verifyToken, generateRandomToken } = require('../utils/jwt');
+const generateTokens = require('../utils/generateToken');
+const tokenService = require('../services/tokenService');
+const { log } = require('winston');
 
 // Number of salt rounds for password hashing
 const SALT_ROUNDS = 10;
@@ -22,17 +25,11 @@ const userController = {
    */
   register: async (req, res, next) => {
     try {
-      const { username, email, password, firstName, lastName, phone, role } = req.body;
+      const { username, email, password, first_name, last_name, phone, role } = req.body;
       
       // Validate required fields
       if (!username || !email || !password) {
         throw new ValidationError('Username, email, and password are required');
-      }
-      
-      // Check if user already exists
-      const existingUser = await userQueries.getUserByEmailOrUsername(email, username);
-      if (existingUser) {
-        throw new ConflictError('User with this email or username already exists');
       }
       
       // Hash password
@@ -44,8 +41,8 @@ const userController = {
         username,
         email,
         password_hash: passwordHash,
-        first_name: firstName || null,
-        last_name: lastName || null,
+        first_name: first_name || null,
+        last_name: last_name || null,
         phone: phone || null,
         role: role || 'customer', // Default role
         account_status:  'active'
@@ -55,25 +52,16 @@ const userController = {
       const user = await userQueries.createUser(newUser);
       
       // Create JWT token
-      const token = jwt.sign(
-        { 
-          userId: user.user_id,
-          email: user.email,
-          role: user.role
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-      
-      // Return user data (excluding sensitive information)
-      const { password_hash, ...userData } = user;
+      const {accessToken, refreshToken} = await generateTokens(user)
       
       res.status(201).json({
         success: true,
         message: 'User registered successfully',
         data: {
-          user: userData,
-          token
+          user: user,
+          accessToken, 
+          refreshToken
+ 
         }
       });
     } catch (error) {
@@ -97,7 +85,7 @@ const userController = {
       }
       
       // Find user by email
-      const user = await userQueries.findByEmail(email);
+      const user = await userQueries.getUserByEmail(email);
       if (!user) {
         throw new AuthenticationError('Invalid email or password');
       }
@@ -114,28 +102,22 @@ const userController = {
       }
       
       // Update last login timestamp
-      await userQueries.updateLastLogin(user.user_id);
-      
-      // Create JWT token
-      const token = jwt.sign(
-        { 
-          userId: user.user_id,
-          email: user.email,
-          role: user.role
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
+     const {last_login} = await userQueries.updateLastLogin(user.user_id);
+
+            const {accessToken, refreshToken} = await generateTokens(user)
       
       // Return user data (excluding sensitive information)
-      const { password_hash, ...userData } = user;
+      const { password_hash, ...userData  } = user;
+
+      userData.last_login = last_login;
+
       
       res.status(200).json({
         success: true,
         message: 'Login successful',
         data: {
           user: userData,
-          token
+        accessToken, refreshToken
         }
       });
     } catch (error) {
@@ -143,6 +125,73 @@ const userController = {
     }
   },
   
+/**
+ * User logout
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+  logout: async (req, res, next) => {
+  try {
+    const { userId } = req.body;
+    
+    if (userId) {
+      // Invalidate refresh token
+      const row =await  tokenService.revokeToken(userId);
+
+       console.log(row)
+    }
+
+    
+    res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+},
+
+/**
+ * Refresh access token
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+  refreshToken: async (req, res, next) => {
+  try {
+    const {refreshtoken} = req.body;
+    
+    if (!refreshtoken) {
+      throw new AuthenticationError('Refresh token is required');
+    }
+    
+    // Verify token
+    const {userId} = await tokenService.verifyToken(refreshtoken) 
+
+    if(!userId){
+      throw new AuthenticationError('Invalid refresh token')
+    }
+
+      const user = await userQueries.getUserById(userId);
+      if (!user) {
+        throw new AuthenticationError('Invalid email or password');
+      }
+
+    const {accessToken, refreshToken} = await generateTokens(user)
+
+    res.status(200).json({
+      success: true,
+      message: 'Access token refreshed successfully',
+      accessToken, refreshToken
+    });
+  } catch (error) {
+    next(error);
+  }
+},
+
+
+
   /**
    * Get user profile
    * @param {Object} req - Express request object
@@ -448,7 +497,7 @@ const userController = {
       }
       
       // Get users with pagination
-      const result = await userQueries.getAllUsers(filters, page, limit);
+      const result = await userQueries.getAllUsers({filters, page, limit, search, role, status});
       
       res.status(200).json({
         success: true,
@@ -659,73 +708,7 @@ logi: async (req, res, next) => {
   }
 },
 
-/**
- * User logout
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- */
-  logout: async (req, res, next) => {
-  try {
-    const { refreshToken, userId } = req.body;
-    
-    if (refreshToken) {
-      // Invalidate refresh token
-      await userQueries.revokeApiToken(userId, refreshToken);
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: 'Logged out successfully'
-    });
-  } catch (error) {
-    next(error);
-  }
-},
 
-/**
- * Refresh access token
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- */
-  refreshToken: async (req, res, next) => {
-  try {
-    const { refreshToken, userId } = req.body;
-    
-    if (!refreshToken) {
-      throw new AuthenticationError('Refresh token is required');
-    }
-    
-    // Verify token
-    const decoded = verifyToken(refreshToken);
-    
-    // Check if token exists and is valid
-    const {token_id} = await tokenQueries.getApiTokens(userId);
-    if (!token_id || !decoded) {
-      throw new AuthenticationError('Invalid refresh token');
-    }
-    
-    // Get user
-    const user = await userQueries.getUserById(decoded.userId);
-    if (!user || user.account_status !== 'active') {
-      throw new AuthenticationError('User not found or inactive');
-    }
-    
-    // Generate new access token
-    const newAccessToken = generateToken({
-      userId: user.user_id,
-      role: user.role
-    }, '24h');
-    
-    res.status(200).json({
-      success: true,
-      accessToken: newAccessToken
-    });
-  } catch (error) {
-    next(error);
-  }
-},
 
 /**
  * Request password reset
@@ -812,7 +795,7 @@ resetPassword: async (req, res, next) => {
  */
 getUserProfile: async (req, res, next) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.user_id;
     
     const user = await userQueries.getUserById(userId);
     if (!user) {
@@ -851,14 +834,17 @@ getUserProfile: async (req, res, next) => {
 updateUserProfile : async (req, res, next) => {
   try {
     const userId = req.user.userId;
-    const { firstName, lastName, phone, address } = req.body;
+    console.log(req.user)
+    // const { firstName, lastName, phone, address, username } = req.body;
     
     // Update user profile
-    const updatedUser = await userQueries.updateUserProfile(userId, {
-      first_name: firstName,
-      last_name: lastName,
-      phone,
-      address
+    const updatedUser = await userQueries.updateUserProfile(req.user.userId, {
+      ...req.body
+      // first_name: firstName,
+      // last_name: lastName,
+      // phone,
+      // address,
+      // username
     });
     
     if (!updatedUser) {

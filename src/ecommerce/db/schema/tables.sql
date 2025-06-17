@@ -21,6 +21,7 @@ CREATE TABLE users (
     last_login TIMESTAMP WITH TIME ZONE
 );
 
+--
 CREATE TABLE user_tokens (
   token_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -140,7 +141,7 @@ CREATE TABLE orders (
     ) DEFAULT 'pending',
     subtotal DECIMAL(10, 2) NOT NULL CHECK (subtotal >= 0),
     tax_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (tax_amount >= 0),
-    shipping_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (shipping_amount >= 0),
+    shipping_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (shipping_amount >= 0),   
     discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (discount_amount >= 0),
     total_amount DECIMAL(10, 2) NOT NULL CHECK (total_amount >= 0),
     shipping_address JSONB NOT NULL,

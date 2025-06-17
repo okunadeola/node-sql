@@ -6,14 +6,13 @@ const router = express.Router();
 const cartController = require('../controllers/cartController');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validation');
-const rateLimiter = require('../middleware/rateLimiter');
 
 // Apply rate limiter to all cart routes
-router.use(rateLimiter({
-  maxRequests: 120,
-  windowMs: 60 * 1000, // 1 minute
-  keyPrefix: 'cart_api'
-}));
+// router.use(rateLimiter({
+//   maxRequests: 120,
+//   windowMs: 60 * 1000, // 1 minute
+//   keyPrefix: 'cart_api'
+// }));
 
 // Get cart (authenticated or session-based)
 router.get('/', cartController.getCart);

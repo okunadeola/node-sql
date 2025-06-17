@@ -4,8 +4,9 @@
  */
 const fs = require('fs').promises;
 const path = require('path');
-const db = require('../config/db');
-const logger = require('../utils/logger');
+const db = require('../../config/db');
+const logger = require('../../utils/logger');
+
 
 class MigrationManager {
   /**
@@ -94,7 +95,7 @@ class MigrationManager {
    * @private
    */
   async _applyMigration(migrationFile) {
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       // Start transaction
@@ -190,6 +191,74 @@ class MigrationManager {
       return filePath;
     } catch (error) {
       logger.error('Failed to create migration file', { error: error.message });
+      throw error;
+    }
+  }
+
+
+
+
+
+    /**
+   * Get migration status
+   * @returns {Promise<Object>} Migration status information
+   */
+  async getMigrationStatus() {
+    try {
+      await this.init();
+      
+      const availableMigrations = await this._getAvailableMigrations();
+      const appliedMigrations = await this._getAppliedMigrations();
+      
+      const pendingMigrations = availableMigrations.filter(
+        migration => !appliedMigrations.includes(migration)
+      );
+
+      return {
+        total: availableMigrations.length,
+        applied: appliedMigrations.length,
+        pending: pendingMigrations.length,
+        appliedMigrations,
+        pendingMigrations
+      };
+    } catch (error) {
+      logger.error('Failed to get migration status', { error: error.message });
+      throw error;
+    }
+  }
+
+
+  
+
+
+
+
+  /**
+   * Rollback the last migration (use with caution)
+   * @returns {Promise<string>} Name of rolled back migration
+   */
+  async rollbackLastMigration() {
+    try {
+      const result = await db.query(
+        'SELECT name FROM migrations ORDER BY applied_at DESC LIMIT 1'
+      );
+      
+      if (result.rows.length === 0) {
+        throw new Error('No migrations to rollback');
+      }
+      
+      const lastMigration = result.rows[0].name;
+      
+      // Remove from migrations table
+      await db.query('DELETE FROM migrations WHERE name = $1', [lastMigration]);
+      
+      logger.warn('Migration rolled back (manual cleanup may be required)', { 
+        migration: lastMigration 
+      });
+      
+      return lastMigration;
+    } catch (error) {
+      logger.error('Failed to rollback migration', { error: error.message });
       throw error;
     }
   }

@@ -132,152 +132,169 @@ ALTER TABLE products
         REFERENCES users(user_id) 
         ON DELETE SET NULL;
 
--- Add trigger to prevent deletion of categories with products
-CREATE OR REPLACE FUNCTION prevent_category_deletion_with_products()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM products WHERE category_id = OLD.category_id) THEN
-        RAISE EXCEPTION 'Cannot delete category with associated products';
-    END IF;
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
 
-CREATE TRIGGER prevent_category_deletion_trigger
-BEFORE DELETE ON categories
-FOR EACH ROW EXECUTE FUNCTION prevent_category_deletion_with_products();
 
--- Add trigger to update product status when inventory is zero
-CREATE OR REPLACE FUNCTION update_product_status_on_inventory_change()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.quantity = 0 AND NEW.quantity != OLD.quantity THEN
-        -- Create a product status history record
-        INSERT INTO product_status_history (
-            product_id, 
-            previous_status, 
-            new_status, 
-            reason,
-            changed_by
-        )
-        SELECT 
-            NEW.product_id,
-            p.status,
-            'out_of_stock',
-            'Automatic update - zero inventory',
-            NULL
-        FROM products p
-        WHERE p.product_id = NEW.product_id;
+-- -- Add trigger to prevent deletion of categories with products
+-- CREATE OR REPLACE FUNCTION prevent_category_deletion_with_products()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--     IF EXISTS (SELECT 1 FROM products WHERE category_id = OLD.category_id) THEN
+--         RAISE EXCEPTION 'Cannot delete category with associated products';
+--     END IF;
+--     RETURN OLD;
+-- END;
+-- $$ LANGUAGE plpgsql;
+
+-- -- Create the trigger
+-- CREATE TRIGGER prevent_category_deletion 
+--     BEFORE DELETE ON categories 
+--     FOR EACH ROW 
+--     EXECUTE FUNCTION prevent_category_deletion_with_products();
+
+-- -- Create a product status history table (needed for the trigger below)
+-- CREATE TABLE IF NOT EXISTS product_status_history (
+--     history_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+--     product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
+--     previous_status VARCHAR(30),
+--     new_status VARCHAR(30) NOT NULL,
+--     reason TEXT,
+--     changed_by UUID REFERENCES users(user_id),
+--     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+-- );
+
+-- -- Add status column to products table (since it's referenced in triggers but doesn't exist)
+-- ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'active' 
+--     CHECK (status IN ('active', 'inactive', 'out_of_stock', 'discontinued'));
+
+-- -- Add trigger to update product status when inventory is zero
+-- CREATE OR REPLACE FUNCTION update_product_status_on_inventory_change()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--     IF NEW.quantity = 0 AND (OLD.quantity IS NULL OR NEW.quantity != OLD.quantity) THEN
+--         -- Create a product status history record
+--         INSERT INTO product_status_history (
+--             product_id, 
+--             previous_status, 
+--             new_status, 
+--             reason,
+--             changed_by
+--         )
+--         SELECT 
+--             NEW.product_id,
+--             p.status,
+--             'out_of_stock',
+--             'Automatic update - zero inventory',
+--             NULL
+--         FROM products p
+--         WHERE p.product_id = NEW.product_id;
         
-        -- Update the product status
-        UPDATE products 
-        SET status = 'out_of_stock', updated_at = NOW()
-        WHERE product_id = NEW.product_id AND status != 'out_of_stock';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+--         -- Update the product status
+--         UPDATE products 
+--         SET status = 'out_of_stock', updated_at = CURRENT_TIMESTAMP
+--         WHERE product_id = NEW.product_id AND status != 'out_of_stock';
+--     END IF;
+--     RETURN NEW;
+-- END;
+-- $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER update_product_status_on_inventory_trigger
-AFTER UPDATE ON inventory
-FOR EACH ROW
-WHEN (NEW.quantity IS DISTINCT FROM OLD.quantity)
-EXECUTE FUNCTION update_product_status_on_inventory_change();
+-- CREATE TRIGGER update_product_status_on_inventory_trigger
+--     AFTER UPDATE ON inventory
+--     FOR EACH ROW
+--     WHEN (NEW.quantity IS DISTINCT FROM OLD.quantity)
+--     EXECUTE FUNCTION update_product_status_on_inventory_change();
 
--- Add trigger to update order total on order item changes
-CREATE OR REPLACE FUNCTION update_order_totals()
-RETURNS TRIGGER AS $$
-DECLARE
-    new_subtotal DECIMAL(10, 2);
-    tax_total DECIMAL(10, 2);
-    discount_total DECIMAL(10, 2);
-    shipping_amount DECIMAL(10, 2);
-BEGIN
-    -- Calculate new subtotal from order items
-    SELECT 
-        COALESCE(SUM(subtotal), 0),
-        COALESCE(SUM(tax_amount), 0),
-        COALESCE(SUM(discount_amount), 0)
-    INTO new_subtotal, tax_total, discount_total
-    FROM order_items
-    WHERE order_id = NEW.order_id;
+-- -- Add trigger to update order total on order item changes
+-- CREATE OR REPLACE FUNCTION update_order_totals()
+-- RETURNS TRIGGER AS $$
+-- DECLARE
+--     order_id_val UUID;
+--     new_subtotal DECIMAL(10, 2);
+--     tax_total DECIMAL(10, 2);
+--     discount_total DECIMAL(10, 2);
+--     shipping_amt DECIMAL(10, 2);
+-- BEGIN
+--     -- Determine the order_id based on the operation
+--     IF TG_OP = 'DELETE' THEN
+--         order_id_val := OLD.order_id;
+--     ELSE
+--         order_id_val := NEW.order_id;
+--     END IF;
     
-    -- Get shipping amount (remains unchanged)
-    SELECT shipping_amount INTO shipping_amount
-    FROM orders
-    WHERE order_id = NEW.order_id;
+--     -- Calculate new subtotal from order items
+--     SELECT 
+--         COALESCE(SUM(subtotal), 0),
+--         COALESCE(SUM(tax_amount), 0),
+--         COALESCE(SUM(discount_amount), 0)
+--     INTO new_subtotal, tax_total, discount_total
+--     FROM order_items
+--     WHERE order_id = order_id_val;
     
-    -- Update order totals
-    UPDATE orders
-    SET 
-        subtotal = new_subtotal,
-        tax_amount = tax_total,
-        discount_amount = discount_total,
-        total_amount = new_subtotal + tax_total + shipping_amount - discount_total,
-        updated_at = NOW()
-    WHERE order_id = NEW.order_id;
+--     -- Get shipping amount (remains unchanged)
+--     SELECT shipping_amount INTO shipping_amt
+--     FROM orders
+--     WHERE order_id = order_id_val;
     
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER update_order_totals_trigger
-AFTER INSERT OR UPDATE OR DELETE ON order_items
-FOR EACH ROW EXECUTE FUNCTION update_order_totals();
-
--- Add trigger to create order history on status change
-CREATE OR REPLACE FUNCTION track_order_status_changes()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.status IS DISTINCT FROM OLD.status THEN
-        INSERT INTO order_history (
-            order_id,
-            status,
-            comment,
-            created_by
-        ) VALUES (
-            NEW.order_id,
-            NEW.status,
-            'Status changed from ' || OLD.status || ' to ' || NEW.status,
-            NULL
-        );
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER track_order_status_changes_trigger
-AFTER UPDATE ON orders
-FOR EACH ROW
-WHEN (NEW.status IS DISTINCT FROM OLD.status)
-EXECUTE FUNCTION track_order_status_changes();
-
--- Add trigger to reserve inventory when adding to cart
-CREATE OR REPLACE FUNCTION reserve_inventory_for_cart()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Update inventory reserved quantity
-    UPDATE inventory
-    SET 
-        reserved_quantity = reserved_quantity + NEW.quantity,
-        updated_at = NOW()
-    WHERE product_id = NEW.product_id;
+--     -- Update order totals
+--     UPDATE orders
+--     SET 
+--         subtotal = new_subtotal,
+--         tax_amount = tax_total,
+--         discount_amount = discount_total,
+--         total_amount = new_subtotal + tax_total + shipping_amt - discount_total,
+--         updated_at = CURRENT_TIMESTAMP
+--     WHERE order_id = order_id_val;
     
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+--     IF TG_OP = 'DELETE' THEN
+--         RETURN OLD;
+--     ELSE
+--         RETURN NEW;
+--     END IF;
+-- END;
+-- $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER reserve_inventory_for_cart_trigger
-AFTER INSERT ON cart_items
-FOR EACH ROW EXECUTE FUNCTION reserve_inventory_for_cart();
+-- CREATE TRIGGER update_order_totals_trigger
+--     AFTER INSERT OR UPDATE OR DELETE ON order_items
+--     FOR EACH ROW 
+--     EXECUTE FUNCTION update_order_totals();
 
--- Create a product status history table (referenced in trigger)
-CREATE TABLE IF NOT EXISTS product_status_history (
-    history_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
-    previous_status VARCHAR(30),
-    new_status VARCHAR(30) NOT NULL,
-    reason TEXT,
-    changed_by UUID REFERENCES users(user_id),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+-- -- Add trigger to create order history on status change
+-- CREATE OR REPLACE FUNCTION track_order_status_changes()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--     IF NEW.status IS DISTINCT FROM OLD.status THEN
+--         INSERT INTO order_history (
+--             order_id,
+--             status,
+--             comment,
+--             created_by
+--         ) VALUES (
+--             NEW.order_id,
+--             NEW.status,
+--             'Status changed from ' || OLD.status || ' to ' || NEW.status,
+--             NULL
+--         );
+--     END IF;
+--     RETURN NEW;
+-- END;
+-- $$ LANGUAGE plpgsql;
+
+-- CREATE TRIGGER track_order_status_changes_trigger
+--     AFTER UPDATE ON orders
+--     FOR EACH ROW
+--     WHEN (NEW.status IS DISTINCT FROM OLD.status)
+--     EXECUTE FUNCTION track_order_status_changes();
+
+-- -- Add trigger to reserve inventory when adding to cart
+-- CREATE OR REPLACE FUNCTION reserve_inventory_for_cart()
+-- RETURNS TRIGGER AS $$
+-- BEGIN
+--     -- Update inventory reserved quantity
+--     UPDATE inventory
+--     SET 
+--         reserved_quantity = reserved_quantity + NEW.quantity,
+--         updated_at = CURRENT_TIMESTAMP
+--     WHERE product_id = NEW.product_id;
+    
+--     RETURN NEW;
+-- END;
+-- $$ LANGUAGE plpgsql;

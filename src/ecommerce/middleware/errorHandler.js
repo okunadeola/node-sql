@@ -176,9 +176,9 @@ module.exports = (err, req, res, next) => {
     error.name = err.name;
     
     // PostgreSQL errors
-    if (err.code && typeof err.code === 'string' && err.code.startsWith('22') || err.code.startsWith('23')) {
-      error = handlePostgresError(err);
-    }
+    // if (err.code && typeof err.code === 'string' && err.code.startsWith('22') || err.code.startsWith('23')) {
+    //   error = handlePostgresError(err);
+    // }
     
     // MongoDB errors
     if (err.name === 'ValidationError') error = handleMongoDBValidationError(err);

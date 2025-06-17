@@ -750,7 +750,7 @@ exports.updateOrderItem = async (req, res, next) => {
     }
     
     // Begin transaction
-    await orderQueries.beginTransaction();
+    // await orderQueries.beginTransaction();
     
     try {
       const originalQuantity = item.quantity;
@@ -766,11 +766,11 @@ exports.updateOrderItem = async (req, res, next) => {
       const taxAmount = subtotal * 0.1; // Simplified tax calculation
       const total = subtotal + taxAmount;
       
-      await orderQueries.updateOrderItemTotals(itemId, {
-        subtotal,
-        tax_amount: taxAmount,
-        total
-      });
+      // await orderQueries.updateOrderItemTotals(itemId, {
+      //   subtotal,
+      //   tax_amount: taxAmount,
+      //   total
+      // });
       
       // Update inventory if quantity changed
       if (quantity !== undefined && quantity !== originalQuantity) {

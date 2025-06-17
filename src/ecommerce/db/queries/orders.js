@@ -24,7 +24,7 @@ const orderQueries = {
    * @returns {Promise<Object>} Created order
    */
   createOrder: async (orderData) => {
-    const client = await db.getClient();
+    const client = await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -284,10 +284,11 @@ const orderQueries = {
    * @returns {Promise<Object>} Updated order
    */
   updateOrderStatus: async (orderId, status, options = {}) => {
+    const client =  await db.pool.connect();
 
     
     try {
-      await db.query('BEGIN');
+      await client.query('BEGIN');
       
       // Update order status
       const updateQuery = `
@@ -299,24 +300,24 @@ const orderQueries = {
         RETURNING *
       `;
       
-      const result = await db.query(updateQuery, [status, orderId]);
+      const result = await client.query(updateQuery, [status, orderId]);
       
       if (result.rows.length === 0) {
         throw new NotFoundError(`Order not found: ${orderId}`);
       }
       
       // Add order history entry
-      await db.query(
+      await client.query(
         `INSERT INTO order_history (order_id, status, comment, created_by)
          VALUES ($1, $2, $3, $4)`,
         [orderId, status, options.comment || `Status updated to ${status}`, options.userId]
       );
       
-      await db.query('COMMIT');
+      await client.query('COMMIT');
       
       return result.rows[0];
     } catch (error) {
-      await db.query('ROLLBACK');
+      await client.query('ROLLBACK');
       logger.error('Error updating order status', { error: error.message, orderId, status });
       
       if (error instanceof NotFoundError) {
@@ -845,7 +846,7 @@ const orderQueries = {
    */
   updateOrderStatus2: async (orderId, status, comment, userId) => {
     // Start a transaction
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -902,7 +903,7 @@ const orderQueries = {
    */
   cancelOrder: async (orderId, userId, reason) => {
     // Start a transaction
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -981,7 +982,7 @@ const orderQueries = {
    */
   refundOrder: async (orderId, refundData, userId) => {
     // Start a transaction
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       await client.query('BEGIN');
@@ -1204,7 +1205,7 @@ const orderQueries = {
    */
   processPayment: async (orderId, paymentData) => {
     // Start a transaction
-    const client = await db.getClient();
+    const client =  await db.pool.connect();
     
     try {
       await client.query('BEGIN');

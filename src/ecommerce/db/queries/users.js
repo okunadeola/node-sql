@@ -364,13 +364,16 @@ const userQueries = {
   updateUserProfile: async (userId, userData) => {
     try {
       // Check if user exists
-      await userQueries.getUserById(userId);
+      // await userQueries.getUserById(userId);
       
       // Prepare data for update
       const updateData = {};
       const allowedFields = [
-        'first_name', 'last_name', 'phone', 'address', 'updated_at'
+        'first_name', 'last_name', 'phone', 'address', 'updated_at, username'
       ];
+
+
+      console.log(userId, userData)
       
       allowedFields.forEach(field => {
         if (userData[field] !== undefined) {
@@ -388,7 +391,7 @@ const userQueries = {
       if (!updateData.updated_at) {
         updateData.updated_at = new Date();
       }
-      
+      console.log(updateData)
       // Update user
       const { query, values } = SqlBuilder.buildUpdateQuery(
         'users',
@@ -1118,6 +1121,56 @@ const userQueries = {
     try {
       const query = `
         SELECT 
+          token
+        FROM user_tokens
+        WHERE user_id = $1
+      `;
+      
+      const result = await db.query(query, [userId]);
+
+      const { token} =  result.rows[0];
+
+      return { token: token };
+    } catch (error) {
+      logger.error('Error fetching API tokens', { error: error.message, userId });
+      throw new DatabaseError('Failed to fetch API tokens');
+    }
+  },
+
+  /**
+   * Get API tokens for a user
+   * @param {string} tokenID - User tokenID ID
+   * @returns {Promise<Array>} API tokens
+   */
+  getApiTokensByToken: async (tokenID) => {
+    try {
+      const query = `
+        SELECT 
+          token
+        FROM user_tokens
+        WHERE token = $1
+      `;
+      
+      const result = await db.query(query, [tokenID]);
+
+      const { token} =  result.rows[0];
+
+      return { token: token };
+    } catch (error) {
+      logger.error('Error fetching API tokens', { error: error.message, userId });
+      throw new DatabaseError('Failed to fetch API tokens');
+    }
+  },
+  
+  /**
+   * Get API tokens for a user
+   * @param {string} userId - User ID
+   * @returns {Promise<Array>} API tokens
+   */
+  getGuestApiTokens: async (userId) => {
+    try {
+      const query = `
+        SELECT 
           token_id, name, permissions, created_at, 
           last_used_at, expires_at
         FROM api_tokens
@@ -1185,7 +1238,31 @@ const userQueries = {
       }
       throw new DatabaseError('Failed to revoke API token');
     }
-  }
+  },
+
+
+    /**
+   * Create an API token for a user
+   * @param {string} userId - User ID
+   * @param {Object} tokenData - Token data
+   * @returns {Promise<Object>} Created token record
+   */
+  createUserToken: async (userId, tokenData) => {
+    try {
+      const data = {
+        ...tokenData,
+        user_id: userId,
+      };
+      
+      const { query, values } = SqlBuilder.buildInsertQuery('user_tokens', data);
+      const result = await db.query(query, values);
+      
+      return result.rows[0];
+    } catch (error) {
+      logger.error('Error creating API token', { error: error.message, userId });
+      throw new DatabaseError('Failed to create API token');
+    }
+  },
 
 
 

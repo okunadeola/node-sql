@@ -6,6 +6,7 @@ const productQueries = require('../db/queries/products');
 const searchQueries = require('../db/queries/search');
 const { NotFoundError, ValidationError, AuthorizationError } = require('../utils/error');
 const logger = require('../utils/logger');
+const {pool} = require('../config/db')
 
 /**
  * Get a list of products with pagination and filtering
@@ -554,7 +555,7 @@ exports.getProductReviews2 = async (req, res, next) => {
 exports.createProduct2 = async (req, res, next) => {
   try {
     // Start a database transaction
-    const client = await db.getClient();
+    const client = await pool.connect();;
     
     try {
       await client.query('BEGIN');
